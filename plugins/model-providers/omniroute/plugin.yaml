@@ -1,0 +1,5 @@
+name: omniroute-profile
+kind: model-provider
+version: 1.0.0
+description: OmniRoute OpenAI-compat gateway; Hermes sends workload envelope only
+author: omniroute

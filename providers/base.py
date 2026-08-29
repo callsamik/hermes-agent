@@ -101,6 +101,13 @@ class ProviderProfile:
 
     # ── Hooks (override in subclass for complex providers) ───
 
+    def coerce_model_id(self, model: str | None) -> str | None:
+        """Return the provider-safe model identifier sent on the wire.
+
+        Default: preserve the caller's model unchanged.
+        """
+        return model
+
     def resolve_aux_model(self, *, vision: bool = False) -> str:
         """Return a LIVE cheap-model id for auxiliary tasks, or "".
 
