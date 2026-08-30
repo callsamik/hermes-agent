@@ -6,6 +6,18 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { GatewayClient } from "@/lib/gatewayClient";
+import type {
+  ModelGroupEntry,
+  ModelOptionGroup,
+  ModelOptionProvider,
+  ModelOptionsResponse,
+} from "@/lib/api";
+import {
+  buildOmnirouteSelectCommand,
+  omnirouteApplyPayload,
+  providerModelCount,
+  providerUsesModelGroups,
+} from "@/lib/omnirouteModelPicker";
 import { Check, RefreshCw, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -19,7 +31,8 @@ import { modelSearchText } from "@/lib/model-search-text";
  *
  * Mirrors ui-tui/src/components/modelPicker.tsx:
  *   Stage 1: pick provider (authenticated providers only)
- *   Stage 2: pick model within that provider
+ *   Stage 2 (OmniRoute only): pick Auto or Models group
+ *   Stage 3: pick model / profile within that provider or group
  *
  * Two invocation modes:
  *
@@ -34,20 +47,6 @@ import { modelSearchText } from "@/lib/model-search-text";
  *    requiring an open chat PTY.
  */
 
-interface ModelOptionProvider {
-  name: string;
-  slug: string;
-  models?: string[];
-  total_models?: number;
-  is_current?: boolean;
-  warning?: string;
-}
-
-interface ModelOptionsResponse {
-  model?: string;
-  provider?: string;
-  providers?: ModelOptionProvider[];
-}
 
 interface ExpensiveModelConfirmResponse {
   confirm_message?: string;
@@ -64,6 +63,9 @@ interface PendingExpensiveConfirm {
   model: string;
   persistGlobal: boolean;
   provider: string;
+  omnirouteRoutingMode?: "auto" | "explicit";
+  omnirouteProfile?: string;
+  slashValue?: string;
 }
 
 interface Props {
@@ -79,6 +81,8 @@ interface Props {
     provider: string;
     model: string;
     persistGlobal: boolean;
+    omnirouteRoutingMode?: "auto" | "explicit";
+    omnirouteProfile?: string;
   }):
     | Promise<ExpensiveModelConfirmResponse | void>
     | ExpensiveModelConfirmResponse
@@ -109,6 +113,7 @@ export function ModelPickerDialog(props: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedSlug, setSelectedSlug] = useState("");
+  const [selectedGroupId, setSelectedGroupId] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
   const [query, setQuery] = useState("");
   const [persistGlobal, setPersistGlobal] = useState(alwaysGlobal);
@@ -127,6 +132,7 @@ export function ModelPickerDialog(props: Props) {
       if (prev && next.some((p) => p.slug === prev)) return prev;
       return (next.find((p) => p.is_current) ?? next[0])?.slug ?? "";
     });
+    setSelectedGroupId("");
     setSelectedModel("");
   };
 
@@ -208,9 +214,41 @@ export function ModelPickerDialog(props: Props) {
     [providers, selectedSlug],
   );
 
+  const modelGroups = selectedProvider?.model_groups ?? [];
+  const usesGroups = providerUsesModelGroups(selectedProvider);
+
+  useEffect(() => {
+    if (!usesGroups) {
+      setSelectedGroupId("");
+      return;
+    }
+    setSelectedGroupId((prev) => {
+      if (prev && modelGroups.some((g) => g.id === prev)) return prev;
+      return modelGroups[0]?.id ?? "";
+    });
+    setSelectedModel("");
+  }, [selectedSlug, usesGroups, modelGroups]);
+
+  const selectedGroup = useMemo(
+    () => modelGroups.find((g) => g.id === selectedGroupId) ?? null,
+    [modelGroups, selectedGroupId],
+  );
+
+  const groupedEntries = selectedGroup?.entries ?? [];
+  const entryByLabel = useMemo(() => {
+    const map = new Map<string, ModelGroupEntry>();
+    for (const entry of groupedEntries) {
+      map.set(entry.label, entry);
+    }
+    return map;
+  }, [groupedEntries]);
+
   const models = useMemo(
-    () => selectedProvider?.models ?? [],
-    [selectedProvider],
+    () =>
+      usesGroups
+        ? groupedEntries.map((e) => e.label)
+        : (selectedProvider?.models ?? []),
+    [usesGroups, groupedEntries, selectedProvider],
   );
 
   const trimmedQuery = query.trim();
@@ -227,11 +265,14 @@ export function ModelPickerDialog(props: Props) {
     const ranked = fuzzyRank(
       providers,
       trimmedQuery,
-      (p) => `${p.name} ${p.slug} ${(p.models ?? []).join(" ")}`,
+      (p) =>
+        `${p.name} ${p.slug} ${(p.models ?? []).join(" ")} ${(p.model_groups ?? [])
+          .flatMap((g) => g.entries.map((e) => e.label))
+          .join(" ")}`,
     ).map((r) => r.item);
     if (trimmedQuery) return ranked;
-    const withModels = ranked.filter((p) => (p.models ?? []).length > 0);
-    const withoutModels = ranked.filter((p) => (p.models ?? []).length === 0);
+    const withModels = ranked.filter((p) => providerModelCount(p) > 0);
+    const withoutModels = ranked.filter((p) => providerModelCount(p) === 0);
     return [...withModels, ...withoutModels];
   }, [providers, trimmedQuery]);
 
@@ -265,30 +306,84 @@ export function ModelPickerDialog(props: Props) {
 
   const canConfirm = !!selectedProvider && !!selectedModel && !applying;
 
+  const buildApplyPayload = (
+    providerSlug: string,
+    modelLabel: string,
+    shouldPersistGlobal: boolean,
+  ) => {
+    const persistSuffix =
+      alwaysGlobal || shouldPersistGlobal ? " --global" : "";
+    if (usesGroups && selectedGroup) {
+      const entry = entryByLabel.get(modelLabel);
+      if (!entry) {
+        return null;
+      }
+      const payload = omnirouteApplyPayload(providerSlug, selectedGroup, entry);
+      if (!payload) {
+        return null;
+      }
+      return {
+        provider: providerSlug,
+        model: payload.model,
+        omnirouteRoutingMode: payload.omnirouteRoutingMode,
+        omnirouteProfile: payload.omnirouteProfile,
+        slashValue: buildOmnirouteSelectCommand(
+          providerSlug,
+          selectedGroup,
+          entry,
+          persistSuffix,
+        ),
+      };
+    }
+    return {
+      provider: providerSlug,
+      model: modelLabel,
+      slashValue: `${modelLabel} --provider ${providerSlug}${persistSuffix}`,
+    };
+  };
+
   const applySelection = async (
     confirmExpensiveModel = false,
     forced?: PendingExpensiveConfirm,
   ) => {
     const providerSlug = forced?.provider ?? selectedProvider?.slug ?? "";
-    const model = forced?.model ?? selectedModel;
+    const modelLabel = forced?.model ?? selectedModel;
     const shouldPersistGlobal = forced?.persistGlobal ?? persistGlobal;
 
-    if (!providerSlug || !model || applying) return;
+    if (!providerSlug || !modelLabel || applying) return;
+
+    const resolved =
+      forced?.slashValue && forced.model
+        ? {
+            provider: forced.provider,
+            model: forced.model,
+            omnirouteRoutingMode: forced.omnirouteRoutingMode,
+            omnirouteProfile: forced.omnirouteProfile,
+            slashValue: forced.slashValue,
+          }
+        : buildApplyPayload(providerSlug, modelLabel, shouldPersistGlobal);
+
+    if (!resolved) return;
 
     if (standalone && onApply) {
       setApplying(true);
       try {
         const result = await onApply({
           confirmExpensiveModel,
-          provider: providerSlug,
-          model,
+          provider: resolved.provider,
+          model: resolved.model,
           persistGlobal: shouldPersistGlobal,
+          omnirouteRoutingMode: resolved.omnirouteRoutingMode,
+          omnirouteProfile: resolved.omnirouteProfile,
         });
         if (result?.confirm_required) {
           setPendingConfirm({
-            provider: providerSlug,
-            model,
+            provider: resolved.provider,
+            model: resolved.model,
             persistGlobal: shouldPersistGlobal,
+            omnirouteRoutingMode: resolved.omnirouteRoutingMode,
+            omnirouteProfile: resolved.omnirouteProfile,
+            slashValue: resolved.slashValue,
             message:
               result.confirm_message ||
               result.warning ||
@@ -305,18 +400,20 @@ export function ModelPickerDialog(props: Props) {
     } else if (gw && sessionId) {
       setApplying(true);
       try {
-        const global = shouldPersistGlobal ? " --global" : "";
         const result = await gw.request<ConfigSetResponse>("config.set", {
           confirm_expensive_model: confirmExpensiveModel,
           key: "model",
           session_id: sessionId,
-          value: `${model} --provider ${providerSlug}${global}`,
+          value: resolved.slashValue,
         });
         if (result?.confirm_required) {
           setPendingConfirm({
-            provider: providerSlug,
-            model,
+            provider: resolved.provider,
+            model: resolved.model,
             persistGlobal: shouldPersistGlobal,
+            omnirouteRoutingMode: resolved.omnirouteRoutingMode,
+            omnirouteProfile: resolved.omnirouteProfile,
+            slashValue: resolved.slashValue,
             message:
               result.confirm_message ||
               result.warning ||
@@ -331,8 +428,7 @@ export function ModelPickerDialog(props: Props) {
         setApplying(false);
       }
     } else if (onSubmit) {
-      const global = shouldPersistGlobal ? " --global" : "";
-      onSubmit(`/model ${model} --provider ${providerSlug}${global}`);
+      onSubmit(`/model ${resolved.slashValue}`);
       onClose();
     }
   };
@@ -394,7 +490,11 @@ export function ModelPickerDialog(props: Props) {
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 grid grid-cols-[200px_1fr] overflow-hidden">
+        <div
+          className={`flex-1 min-h-0 grid overflow-hidden ${
+            usesGroups ? "grid-cols-[200px_120px_1fr]" : "grid-cols-[200px_1fr]"
+          }`}
+        >
           <ProviderColumn
             loading={loading}
             error={error}
@@ -404,12 +504,25 @@ export function ModelPickerDialog(props: Props) {
             query={trimmedQuery}
             onSelect={(slug) => {
               setSelectedSlug(slug);
+              setSelectedGroupId("");
               setSelectedModel("");
             }}
           />
 
+          {usesGroups && (
+            <GroupColumn
+              groups={modelGroups}
+              selectedGroupId={selectedGroupId}
+              onSelect={(groupId) => {
+                setSelectedGroupId(groupId);
+                setSelectedModel("");
+              }}
+            />
+          )}
+
           <ModelColumn
             provider={selectedProvider}
+            group={selectedGroup}
             models={filteredModels}
             allModels={models}
             selectedModel={selectedModel}
@@ -417,12 +530,20 @@ export function ModelPickerDialog(props: Props) {
             currentProviderSlug={currentProviderSlug}
             onSelect={setSelectedModel}
             onConfirm={(m) => {
-              setSelectedModel(m);
+              const built = buildApplyPayload(
+                selectedProvider?.slug ?? "",
+                m,
+                persistGlobal,
+              );
+              if (!built) return;
               void applySelection(false, {
-                provider: selectedProvider?.slug ?? "",
-                model: m,
+                provider: built.provider,
+                model: built.model,
                 persistGlobal,
                 message: "",
+                omnirouteRoutingMode: built.omnirouteRoutingMode,
+                omnirouteProfile: built.omnirouteProfile,
+                slashValue: built.slashValue,
               });
             }}
           />
@@ -549,7 +670,46 @@ function ProviderColumn({
                 {p.is_current && <CurrentTag />}
               </div>
               <div className="text-xs text-text-secondary font-mono truncate">
-                {p.slug} · {p.total_models ?? p.models?.length ?? 0} models
+                {p.slug} · {providerModelCount(p)} models
+              </div>
+            </div>
+          </ListItem>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Group column (OmniRoute Auto | Models)                             */
+/* ------------------------------------------------------------------ */
+
+function GroupColumn({
+  groups,
+  selectedGroupId,
+  onSelect,
+}: {
+  groups: ModelOptionGroup[];
+  selectedGroupId: string;
+  onSelect(groupId: string): void;
+}) {
+  return (
+    <div className="border-r border-border overflow-y-auto">
+      {groups.map((g) => {
+        const active = g.id === selectedGroupId;
+        return (
+          <ListItem
+            key={g.id}
+            active={active}
+            onClick={() => onSelect(g.id)}
+            className={`items-start text-xs border-l-2 ${
+              active ? "border-l-primary" : "border-l-transparent"
+            }`}
+          >
+            <div className="flex-1 min-w-0">
+              <div className="font-medium truncate">{g.label}</div>
+              <div className="text-xs text-text-secondary font-mono truncate">
+                {g.entries.length} entries
               </div>
             </div>
           </ListItem>
@@ -565,6 +725,7 @@ function ProviderColumn({
 
 function ModelColumn({
   provider,
+  group,
   models,
   allModels,
   selectedModel,
@@ -574,6 +735,7 @@ function ModelColumn({
   onConfirm,
 }: {
   provider: ModelOptionProvider | null;
+  group: ModelOptionGroup | null;
   models: { model: string; positions: number[] }[];
   allModels: string[];
   selectedModel: string;
@@ -594,6 +756,11 @@ function ModelColumn({
 
   return (
     <div className="overflow-y-auto">
+      {group && (
+        <div className="px-3 py-2 text-xs text-text-secondary border-b border-border font-mono">
+          {provider.name} · {group.label}
+        </div>
+      )}
       {provider.warning && (
         <div className="p-3 text-xs text-destructive border-b border-border">
           {provider.warning}

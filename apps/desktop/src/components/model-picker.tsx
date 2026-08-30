@@ -1,12 +1,23 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
+import type { ModelSelection } from '@/app/shell/model-menu-panel'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import {
+  omnirouteApplyPayload,
+  providerModelCount,
+  providerUsesModelGroups
+} from '@/lib/omnirouteModelPicker'
 import { modelSearchText } from '@/lib/model-search-text'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
-import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
+import type {
+  ModelGroupEntry,
+  ModelOptionGroup,
+  ModelOptionProvider,
+  ModelPricing
+} from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
 import { cn } from '../lib/utils'
@@ -26,7 +37,7 @@ interface ModelPickerDialogProps {
   sessionId?: string | null
   currentModel: string
   currentProvider: string
-  onSelect: (selection: { provider: string; model: string }) => void
+  onSelect: (selection: ModelSelection) => void
   profile?: string
   /**
    * Optional class for DialogContent. Use it to lift the picker onto a higher
@@ -78,8 +89,8 @@ export function ModelPickerDialog({
       : String(modelOptions.error)
     : null
 
-  const selectModel = (provider: ModelOptionProvider, model: string) => {
-    onSelect({ provider: provider.slug, model })
+  const selectModel = (selection: ModelSelection) => {
+    onSelect(selection)
     onOpenChange(false)
   }
 
@@ -118,6 +129,7 @@ export function ModelPickerDialog({
               onSelectModel={selectModel}
               providers={providers}
               search={search}
+              sessionId={sessionId}
             />
           </CommandList>
         </Command>
@@ -142,15 +154,17 @@ function ModelResults({
   currentModel,
   currentProvider,
   onSelectModel,
-  search
+  search,
+  sessionId
 }: {
   loading: boolean
   error: string | null
   providers: ModelOptionProvider[]
   currentModel: string
   currentProvider: string
-  onSelectModel: (provider: ModelOptionProvider, model: string) => void
+  onSelectModel: (selection: ModelSelection) => void
   search: string
+  sessionId?: string | null
 }) {
   const { t } = useI18n()
   const copy = t.modelPicker
@@ -175,22 +189,33 @@ function ModelResults({
 
   const q = normalize(search)
 
-  const matches = (provider: ModelOptionProvider, model: string) =>
-    !q ||
-    modelSearchText(model).toLowerCase().includes(q) ||
-    provider.name.toLowerCase().includes(q) ||
-    provider.slug.toLowerCase().includes(q)
+  const matchesText = (...parts: string[]) => !q || parts.some(p => p.toLowerCase().includes(q))
 
-  // Only configured providers (those with curated models) are selectable
-  // here. Switching to a NOT-yet-configured provider goes through the
-  // "Add provider" footer button, which opens the full onboarding selector.
-  const configured = providers.filter(p => (p.models ?? []).length > 0)
+  // Only configured providers (those with curated / grouped models) are
+  // selectable here. Switching to a NOT-yet-configured provider goes through
+  // the "Add provider" footer button.
+  const configured = providers.filter(p => providerModelCount(p) > 0)
 
   return (
     <>
       {configured.map(provider => {
-        // Preserve the backend's curated order — filter in place, no re-sort.
-        const models = (provider.models ?? []).filter(m => matches(provider, m))
+        if (providerUsesModelGroups(provider)) {
+          return (
+            <OmnirouteProviderGroups
+              currentModel={currentModel}
+              currentProvider={currentProvider}
+              key={provider.slug}
+              onSelectModel={onSelectModel}
+              provider={provider}
+              search={search}
+              sessionId={sessionId}
+            />
+          )
+        }
+
+        const models = (provider.models ?? []).filter(
+          m => matchesText(modelSearchText(m), provider.name, provider.slug)
+        )
 
         if (models.length === 0) {
           return null
@@ -224,7 +249,11 @@ function ModelResults({
                   key={`${provider.slug}:${model}`}
                   onSelect={() => {
                     if (!locked) {
-                      onSelectModel(provider, model)
+                      onSelectModel({
+                        provider: provider.slug,
+                        model,
+                        sessionId: sessionId ?? null
+                      })
                     }
                   }}
                   value={`${provider.slug}:${model}`}
@@ -248,6 +277,145 @@ function ModelResults({
         )
       })}
     </>
+  )
+}
+
+function OmnirouteProviderGroups({
+  provider,
+  currentModel,
+  currentProvider,
+  onSelectModel,
+  search,
+  sessionId
+}: {
+  provider: ModelOptionProvider
+  currentModel: string
+  currentProvider: string
+  onSelectModel: (selection: ModelSelection) => void
+  search: string
+  sessionId?: string | null
+}) {
+  const q = normalize(search)
+  const groups = provider.model_groups ?? []
+
+  return (
+    <>
+      {provider.warning && (
+        <div className="px-3 pb-1 pt-2">
+          <InlineNotice className="px-2.5 py-1.5 text-xs" kind="warning">
+            {provider.warning}
+          </InlineNotice>
+        </div>
+      )}
+      {groups.map(group => {
+        const entries = group.entries.filter(entry => {
+          const label =
+            group.routing_mode === 'auto' && !entry.label.toLowerCase().startsWith('auto')
+              ? `Auto · ${entry.label}`
+              : entry.label
+
+          return (
+            !q ||
+            label.toLowerCase().includes(q) ||
+            entry.wire_model.toLowerCase().includes(q) ||
+            (entry.profile ?? '').toLowerCase().includes(q) ||
+            provider.name.toLowerCase().includes(q) ||
+            provider.slug.toLowerCase().includes(q) ||
+            group.label.toLowerCase().includes(q)
+          )
+        })
+
+        if (entries.length === 0) {
+          return null
+        }
+
+        return (
+          <CommandGroup
+            heading={
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="truncate">
+                  {provider.name} · {group.label}
+                </span>
+                <span className="font-mono text-xs font-normal normal-case tracking-normal text-muted-foreground">
+                  {provider.slug} · {entries.length}
+                </span>
+              </span>
+            }
+            key={`${provider.slug}:${group.id}`}
+          >
+            {entries.map(entry => (
+              <OmnirouteEntryRow
+                currentModel={currentModel}
+                currentProvider={currentProvider}
+                entry={entry}
+                group={group}
+                key={`${provider.slug}:${group.id}:${entry.id}`}
+                onSelectModel={onSelectModel}
+                provider={provider}
+                search={search}
+                sessionId={sessionId}
+              />
+            ))}
+          </CommandGroup>
+        )
+      })}
+    </>
+  )
+}
+
+function OmnirouteEntryRow({
+  provider,
+  group,
+  entry,
+  currentModel,
+  currentProvider,
+  onSelectModel,
+  search,
+  sessionId
+}: {
+  provider: ModelOptionProvider
+  group: ModelOptionGroup
+  entry: ModelGroupEntry
+  currentModel: string
+  currentProvider: string
+  onSelectModel: (selection: ModelSelection) => void
+  search: string
+  sessionId?: string | null
+}) {
+  const payload = omnirouteApplyPayload(provider.slug, group, entry)
+  const label =
+    group.routing_mode === 'auto' && !entry.label.toLowerCase().startsWith('auto')
+      ? `Auto · ${entry.label}`
+      : entry.label
+  const isCurrent =
+    provider.slug === currentProvider &&
+    payload.model === currentModel &&
+    (group.routing_mode !== 'auto' || payload.model === 'auto')
+  const price = provider.pricing?.[entry.wire_model]
+
+  return (
+    <CommandItem
+      className={cn(
+        'flex items-center gap-2 pl-6 font-mono',
+        isCurrent &&
+          'bg-primary text-primary-foreground data-[selected=true]:bg-primary data-[selected=true]:text-primary-foreground'
+      )}
+      onSelect={() => {
+        onSelectModel({
+          provider: provider.slug,
+          model: payload.model,
+          sessionId: sessionId ?? null,
+          omnirouteRoutingMode: payload.omnirouteRoutingMode,
+          omnirouteProfile: payload.omnirouteProfile
+        })
+      }}
+      value={`${provider.slug}:${group.id}:${entry.id}:${label}`}
+    >
+      <span className="min-w-0 flex-1 truncate">
+        <HighlightMatches query={search} text={label} />
+      </span>
+      <ModelPrice isCurrent={isCurrent} price={price} />
+    </CommandItem>
   )
 }
 
@@ -355,7 +523,7 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
     <span className="flex min-w-0 items-center gap-2">
       <span className="truncate">{provider.name}</span>
       <span className="font-mono text-xs font-normal normal-case tracking-normal text-muted-foreground">
-        {provider.slug} · {provider.total_models ?? provider.models?.length ?? 0}
+        {provider.slug} · {providerModelCount(provider)}
       </span>
       {tierBadge}
     </span>

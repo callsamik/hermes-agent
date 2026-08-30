@@ -21,6 +21,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { providerUsesModelGroups } from '@/lib/omnirouteModelPicker'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { normalize } from '@/lib/text'
@@ -80,7 +81,11 @@ export interface ModelMenuController {
   current: ModelChoice
   presetFor: (provider: string, model: string) => { effort?: string; fast?: boolean }
   /** Commit a model row. Return false to abort (a failed session switch). */
-  select: (model: string, provider: string) => Promise<boolean | void> | void
+  select: (
+    model: string,
+    provider: string,
+    extras?: { omnirouteProfile?: string; omnirouteRoutingMode?: 'auto' | 'explicit' }
+  ) => Promise<boolean | void> | void
   /** Edit ONE option on a row. `isActive` says whether it's the current model. */
   setOptions: (
     patch: { effort?: string; fast?: boolean },
@@ -205,7 +210,10 @@ export function ModelCatalogMenu({
     const variantFast = !(caps?.fast ?? false) && !!family.fastId
     const targetId = variantFast && preset.fast === true ? family.fastId! : family.id
 
-    if ((await controller.select(targetId, provider.slug)) === false) {
+    if ((await controller.select(targetId, provider.slug, {
+      omnirouteRoutingMode: family.omnirouteRoutingMode,
+      omnirouteProfile: family.omnirouteProfile
+    })) === false) {
       return
     }
 
@@ -399,14 +407,15 @@ export function ModelCatalogMenu({
                   group.families.map(family => {
                     // The active id may be the base or its -fast sibling; either
                     // way this one family row represents both.
-                    const activeId =
-                      isCurrentProvider(group.provider, current.provider) &&
-                      (current.model === family.id || current.model === family.fastId)
-                        ? current.model
-                        : null
-
-                    const isCurrent = activeId !== null
-                    const name = modelDisplayParts(family.id).name
+                    // OmniRoute Auto profiles all share wire model `auto` — without
+                    // live profile in the menu state, don't mark every profile checked.
+                    const isCurrent =
+                      family.omnirouteRoutingMode === 'auto'
+                        ? false
+                        : isCurrentProvider(group.provider, current.provider) &&
+                          (current.model === family.id || current.model === family.fastId)
+                    const activeId = isCurrent ? current.model : null
+                    const name = family.label ?? modelDisplayParts(family.id).name
                     const caps = group.provider.capabilities?.[family.id]
 
                     // Effective settings for this row: the live choice when it's
@@ -441,8 +450,10 @@ export function ModelCatalogMenu({
                       closeMenu()
                     }
 
+                    const rowKey = `${group.provider.slug}:${familyVisibilityToken(family)}`
+
                     return (
-                      <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
+                      <DropdownMenuSub key={rowKey}>
                         <DropdownMenuSubTrigger
                           hideChevron
                           onClick={activate}
@@ -451,7 +462,7 @@ export function ModelCatalogMenu({
                               activate()
                             }
                           }}
-                          {...kbRowProps(`${group.provider.slug}:${family.id}`)}
+                          {...kbRowProps(rowKey)}
                         >
                           <span className="min-w-0 flex-1 truncate">
                             <HighlightMatches query={search} text={name} />
@@ -549,14 +560,31 @@ function groupModels(
   const groups: ProviderGroup[] = []
 
   for (const provider of providers) {
-    const allFamilies = collapseModelFamilies(provider.models ?? [])
+    const allFamilies = providerUsesModelGroups(provider)
+      ? (provider.model_groups ?? []).flatMap(group =>
+          group.entries.map(entry => {
+            const label =
+              group.routing_mode === 'auto' && !entry.label.toLowerCase().startsWith('auto')
+                ? `Auto · ${entry.label}`
+                : entry.label
+
+            return {
+              id: entry.wire_model,
+              fastId: null as string | null,
+              label,
+              omnirouteRoutingMode: group.routing_mode,
+              omnirouteProfile: entry.profile
+            }
+          })
+        )
+      : collapseModelFamilies(provider.models ?? [])
 
     if (allFamilies.length === 0) {
       continue
     }
 
     const matches = (family: ModelFamily) =>
-      `${family.id} ${family.fastId ?? ''} ${provider.name} ${provider.slug} ${displayModelName(family.id)}`
+      `${family.id} ${family.fastId ?? ''} ${family.label ?? ''} ${provider.name} ${provider.slug} ${displayModelName(family.id)}`
         .toLowerCase()
         .includes(q)
 
@@ -564,14 +592,28 @@ function groupModels(
 
     if (q) {
       // Search spans every family, regardless of visibility.
-      shown = new Set(allFamilies.filter(matches).map(family => family.id))
-    } else if (visible) {
+      shown = new Set(allFamilies.filter(matches).map(family => familyVisibilityToken(family)))
+    } else if (visible && !providerUsesModelGroups(provider)) {
       // User has customized which models show — honor their selection exactly.
+      // OmniRoute grouped profiles always show (short curated Auto list).
       shown = new Set(
-        allFamilies.filter(family => visible.has(modelVisibilityKey(provider.slug, family.id))).map(family => family.id)
+        allFamilies
+          .filter(family => visible.has(modelVisibilityKey(provider.slug, family.id)))
+          .map(family => familyVisibilityToken(family))
       )
+    } else if (providerUsesModelGroups(provider)) {
+      // Auto profiles always; cap explicit Models like a normal catalog.
+      shown = new Set(
+        allFamilies
+          .filter(family => family.omnirouteRoutingMode === 'auto')
+          .map(family => familyVisibilityToken(family))
+      )
+      const explicit = allFamilies.filter(family => family.omnirouteRoutingMode === 'explicit')
+      for (const family of explicit.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)) {
+        shown.add(familyVisibilityToken(family))
+      }
     } else {
-      shown = new Set(allFamilies.slice(0, DEFAULT_VISIBLE_PER_PROVIDER).map(family => family.id))
+      shown = new Set(allFamilies.slice(0, DEFAULT_VISIBLE_PER_PROVIDER).map(family => familyVisibilityToken(family)))
     }
 
     // Always include the active model — but keep every row in the provider's
@@ -579,14 +621,20 @@ function groupModels(
     // SEARCHING the pin is skipped: a query means "show me matches".
     const activeId =
       !q && isCurrentProvider(provider, current.provider) && current.model
-        ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
+        ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)
         : undefined
 
-    const families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
-
-    if (families.length > 0) {
-      groups.push({ families, provider })
+    if (activeId) {
+      shown.add(familyVisibilityToken(activeId))
     }
+
+    const families = allFamilies.filter(family => shown.has(familyVisibilityToken(family)))
+
+    if (families.length === 0) {
+      continue
+    }
+
+    groups.push({ provider, families })
   }
 
   // Stable, logical group order: alphabetical by provider name. (The backend
@@ -594,6 +642,14 @@ function groupModels(
   groups.sort((a, b) => a.provider.name.localeCompare(b.provider.name))
 
   return groups
+}
+
+function familyVisibilityToken(family: ModelFamily): string {
+  if (family.omnirouteRoutingMode === 'auto') {
+    return `auto:${family.omnirouteProfile || family.id}`
+  }
+
+  return family.id
 }
 
 // Small hooks kept at the bottom so the component reads top-down.

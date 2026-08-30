@@ -727,6 +727,62 @@ def _reset_stale_streak(agent) -> None:
         pass
 
 
+def _omniroute_transport_kwargs(agent) -> dict[str, Any]:
+    """Wire OmniRoute routing mode + envelope from agent runtime state."""
+    if str(getattr(agent, "provider", "") or "").strip().lower() != "omniroute":
+        return {}
+    mode = str(getattr(agent, "omniroute_routing_mode", "") or "auto").strip().lower()
+    if mode == "explicit":
+        return {"omniroute_routing_mode": "explicit"}
+    envelope = getattr(agent, "omniroute_envelope", None)
+    if not isinstance(envelope, dict):
+        envelope = {"profile": "general"}
+    return {
+        "omniroute_routing_mode": "auto",
+        "omniroute_envelope": envelope,
+    }
+
+
+def apply_omniroute_runtime(
+    agent,
+    *,
+    routing_mode: str = "",
+    profile: str = "",
+    envelope: dict | None = None,
+) -> None:
+    """Set agent OmniRoute state; explicit mode clears any stale envelope."""
+    mode = (routing_mode or "").strip().lower()
+    if not mode:
+        return
+    agent.omniroute_routing_mode = mode
+    if mode == "explicit":
+        agent.omniroute_envelope = None
+        return
+    if isinstance(envelope, dict) and envelope.get("profile"):
+        agent.omniroute_envelope = envelope
+    else:
+        prof = (profile or "general").strip() or "general"
+        agent.omniroute_envelope = {"profile": prof}
+
+
+def omniroute_override_from_source(source: dict | None) -> dict:
+    """Extract model_override omniroute keys from a dict."""
+    if not isinstance(source, dict):
+        return {}
+    out: dict = {}
+    mode = str(source.get("omniroute_routing_mode") or "").strip().lower()
+    if mode:
+        out["omniroute_routing_mode"] = mode
+    if mode == "explicit":
+        return out
+    env = source.get("omniroute_envelope")
+    if isinstance(env, dict) and env.get("profile"):
+        out["omniroute_envelope"] = env
+    elif prof := str(source.get("omniroute_profile") or "").strip():
+        out["omniroute_envelope"] = {"profile": prof}
+    return out
+
+
 _INTERRUPTED_WAIT_STALE_SECONDS = 30.0
 
 
@@ -2057,6 +2113,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
+            **_omniroute_transport_kwargs(agent),
         )
 
     # ── Legacy flag path ────────────────────────────────────────────

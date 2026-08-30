@@ -6875,7 +6875,38 @@ class TelegramAdapter(BasePlatformAdapter):
                 await query.answer(text="Provider not found.")
                 return
 
-            models = provider.get("models", [])
+            state.pop("picker_entries", None)
+            if provider_slug == "omniroute":
+                try:
+                    from hermes_cli.omniroute_picker import (
+                        build_platform_omniroute_picker_entries,
+                        provider_has_model_groups,
+                    )
+
+                    if provider_has_model_groups(provider):
+                        picker_entries = build_platform_omniroute_picker_entries(
+                            provider.get("model_groups") or []
+                        )
+                        state["picker_entries"] = picker_entries
+                        models = [
+                            str(e.get("label") or e.get("id") or "")
+                            for e in picker_entries
+                        ]
+                        total = len(picker_entries)
+                        shown = len(models)
+                    else:
+                        models = provider.get("models", [])
+                        total = provider.get("total_models", len(models))
+                        shown = len(models)
+                except Exception:
+                    models = provider.get("models", [])
+                    total = provider.get("total_models", len(models))
+                    shown = len(models)
+            else:
+                models = provider.get("models", [])
+                total = provider.get("total_models", len(models))
+                shown = len(models)
+
             state["selected_provider"] = provider_slug
             state["selected_provider_name"] = provider.get("name", provider_slug)
             state["model_list"] = models
@@ -6884,8 +6915,6 @@ class TelegramAdapter(BasePlatformAdapter):
             keyboard, page_info = self._build_model_keyboard(models, 0)
 
             pname = provider.get("name", provider_slug)
-            total = provider.get("total_models", len(models))
-            shown = len(models)
             extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
 
             await query.edit_message_text(
@@ -6982,7 +7011,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 await query.answer(text="Invalid model index.")
                 return
 
-            model_id = model_list[idx]
+            from hermes_cli.omniroute_picker import platform_picker_switch_at_index
+
+            picker_entries = state.get("picker_entries")
+            model_id, switch_kw = platform_picker_switch_at_index(
+                picker_entries, model_list, idx
+            )
             provider_slug = state.get("selected_provider", "")
             callback = state.get("on_model_selected")
 
@@ -6992,7 +7026,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
             switch_failed = False
             try:
-                result_text = await callback(chat_id, model_id, provider_slug)
+                result_text = await callback(
+                    chat_id,
+                    model_id,
+                    provider_slug,
+                    omniroute_profile=switch_kw.get("omniroute_profile", ""),
+                    omniroute_routing_mode=switch_kw.get("omniroute_routing_mode", ""),
+                )
             except Exception as exc:
                 logger.error("Model picker switch failed: %s", exc)
                 result_text = f"Error switching model: {exc}"
@@ -7031,7 +7071,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 await query.answer(text="Invalid model index.")
                 return
 
-            model_id = model_list[idx]
+            from hermes_cli.omniroute_picker import platform_picker_switch_at_index
+
+            picker_entries = state.get("picker_entries")
+            model_id, switch_kw = platform_picker_switch_at_index(
+                picker_entries, model_list, idx
+            )
             provider_slug = state.get("selected_provider", "")
             callback = state.get("on_model_selected")
 
@@ -7071,7 +7116,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
             switch_failed = False
             try:
-                result_text = await callback(chat_id, model_id, provider_slug)
+                result_text = await callback(
+                    chat_id,
+                    model_id,
+                    provider_slug,
+                    omniroute_profile=switch_kw.get("omniroute_profile", ""),
+                    omniroute_routing_mode=switch_kw.get("omniroute_routing_mode", ""),
+                )
             except Exception as exc:
                 logger.error("Model picker switch failed: %s", exc)
                 result_text = f"Error switching model: {exc}"

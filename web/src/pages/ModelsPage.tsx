@@ -40,6 +40,7 @@ import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
+import { formatMainModelLabel } from "@/lib/omnirouteModelPicker";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 
@@ -944,9 +945,6 @@ function ModelSettingsPanel({
     null,
   );
 
-  const mainProv = aux?.main.provider ?? "";
-  const mainModel = aux?.main.model ?? "";
-
   useEffect(() => {
     api.getMoaModels().then(setMoa).catch(() => setMoa(null));
   }, [refreshKey]);
@@ -957,12 +955,16 @@ function ModelSettingsPanel({
     provider,
     model,
     confirmExpensiveModel,
+    omnirouteProfile,
+    omnirouteRoutingMode,
   }: {
     confirmExpensiveModel?: boolean;
     scope: "main" | "auxiliary";
     task: string;
     provider: string;
     model: string;
+    omnirouteProfile?: string;
+    omnirouteRoutingMode?: "auto" | "explicit";
   }) => {
     const result = await api.setModelAssignment({
       confirm_expensive_model: confirmExpensiveModel,
@@ -970,6 +972,12 @@ function ModelSettingsPanel({
       task,
       provider,
       model,
+      ...(omnirouteRoutingMode
+        ? {
+            omniroute_routing_mode: omnirouteRoutingMode,
+            omniroute_profile: omnirouteProfile ?? "",
+          }
+        : {}),
     });
     if (!result.confirm_required) onSaved();
     return result;
@@ -1003,9 +1011,7 @@ function ModelSettingsPanel({
               </span>
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">
-              {mainProv || "(unset)"}
-              {mainProv && mainModel && " · "}
-              {mainModel || "(unset)"}
+              {formatMainModelLabel(aux?.main ?? { provider: "", model: "" })}
             </div>
           </div>
           <Button
@@ -1073,13 +1079,21 @@ function ModelSettingsPanel({
             loader={api.getModelOptions}
             alwaysGlobal
             title="Set Main Model"
-            onApply={async ({ provider, model, confirmExpensiveModel }) => {
+            onApply={async ({
+              provider,
+              model,
+              confirmExpensiveModel,
+              omnirouteRoutingMode,
+              omnirouteProfile,
+            }) => {
               const result = await applyAssignment({
                 confirmExpensiveModel,
                 scope: "main",
                 task: "",
                 provider,
                 model,
+                omnirouteRoutingMode,
+                omnirouteProfile,
               });
               if (!result.confirm_required) {
                 setPendingReloadModel(model.split("/").slice(-1)[0]);

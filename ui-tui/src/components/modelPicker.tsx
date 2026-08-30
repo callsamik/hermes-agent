@@ -4,9 +4,18 @@ import { useEffect, useMemo, useState } from 'react'
 import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
+import type {
+  ModelGroupEntry,
+  ModelOptionGroup,
+  ModelOptionProvider,
+  ModelOptionsResponse
+} from '../gatewayTypes.js'
 import { fuzzyRank } from '../lib/fuzzy.js'
 import { modelSearchText } from '../lib/model-search-text.js'
+import {
+  buildOmnirouteSelectCommand,
+  providerUsesModelGroups
+} from '../lib/omnirouteModelPicker.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -17,7 +26,7 @@ const VISIBLE = 12
 const MIN_WIDTH = 40
 const MAX_WIDTH = 90
 
-type Stage = 'provider' | 'key' | 'model' | 'disconnect'
+type Stage = 'provider' | 'group' | 'key' | 'model' | 'disconnect'
 
 type ProviderRow = { name: string; provider: ModelOptionProvider }
 
@@ -48,6 +57,7 @@ export function ModelPicker({
   const [loading, setLoading] = useState(true)
   const [persistGlobal, setPersistGlobal] = useState(false)
   const [providerIdx, setProviderIdx] = useState(0)
+  const [groupIdx, setGroupIdx] = useState(0)
   const [modelIdx, setModelIdx] = useState(0)
   const [stage, setStage] = useState<Stage>('provider')
   const [keyInput, setKeyInput] = useState('')
@@ -130,7 +140,34 @@ export function ModelPicker({
   }, [providerRows, filter, stage])
 
   const provider = filteredProviderRows[providerIdx]?.provider
-  const allModels = useMemo(() => provider?.models ?? [], [provider])
+  const modelGroups = provider?.model_groups ?? []
+  const selectedGroup: ModelOptionGroup | undefined = modelGroups[groupIdx]
+  const groupedEntries = selectedGroup?.entries ?? []
+  const allModels = useMemo(
+    () => (providerUsesModelGroups(provider) ? groupedEntries.map(e => e.label) : (provider?.models ?? [])),
+    [provider, groupedEntries]
+  )
+  const groupedEntryByLabel = useMemo(() => {
+    const map = new Map<string, ModelGroupEntry>()
+    for (const entry of groupedEntries) {
+      map.set(entry.label, entry)
+    }
+    return map
+  }, [groupedEntries])
+
+  const filteredGroups = useMemo(() => {
+    if (stage !== 'group' || !filter.trim()) {
+      return modelGroups
+    }
+
+    return fuzzyRank(modelGroups, filter, g => `${g.label} ${g.id}`).map(r => r.item)
+  }, [modelGroups, filter, stage])
+
+  useEffect(() => {
+    if (groupIdx >= filteredGroups.length && filteredGroups.length > 0) {
+      setGroupIdx(0)
+    }
+  }, [filteredGroups.length, groupIdx])
 
   const filteredModels = useMemo(() => {
     if (stage !== 'model' || !filter.trim()) {
@@ -159,7 +196,7 @@ export function ModelPicker({
 
   const back = () => {
     // Esc first clears an active filter on the list stages, before navigating.
-    if ((stage === 'provider' || stage === 'model') && filter.trim()) {
+    if ((stage === 'provider' || stage === 'model' || stage === 'group') && filter.trim()) {
       // Preserve the selected provider across filter clear (same fix as
       // Enter→key/model and Ctrl+D transitions above).
       const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
@@ -176,8 +213,20 @@ export function ModelPicker({
       return
     }
 
-    if (stage === 'model' || stage === 'key' || stage === 'disconnect') {
+    if (stage === 'model') {
+      setStage(providerUsesModelGroups(provider) ? 'group' : 'provider')
+      setModelIdx(0)
+      setKeyInput('')
+      setKeyError('')
+      setKeySaving(false)
+      setFilter('')
+
+      return
+    }
+
+    if (stage === 'group' || stage === 'key' || stage === 'disconnect') {
       setStage('provider')
+      setGroupIdx(0)
       setModelIdx(0)
       setKeyInput('')
       setKeyError('')
@@ -192,7 +241,7 @@ export function ModelPicker({
 
   // On the list stages we capture printable keys (including 'q') into the
   // filter, so the shared overlay q/Esc handler must yield to our own handler.
-  const listStage = stage === 'provider' || stage === 'model'
+  const listStage = stage === 'provider' || stage === 'group' || stage === 'model'
   useOverlayKeys({ disabled: listStage, onBack: back, onClose: onCancel })
 
   useInput((ch, key) => {
@@ -327,9 +376,16 @@ export function ModelPicker({
       return
     }
 
-    const count = stage === 'provider' ? filteredProviderRows.length : models.length
-    const sel = stage === 'provider' ? providerIdx : modelIdx
-    const setSel = stage === 'provider' ? setProviderIdx : setModelIdx
+    const count =
+      stage === 'provider'
+        ? filteredProviderRows.length
+        : stage === 'group'
+          ? filteredGroups.length
+          : models.length
+    const sel =
+      stage === 'provider' ? providerIdx : stage === 'group' ? groupIdx : modelIdx
+    const setSel =
+      stage === 'provider' ? setProviderIdx : stage === 'group' ? setGroupIdx : setModelIdx
 
     if (key.upArrow && sel > 0) {
       setSel(v => v - 1)
@@ -374,6 +430,27 @@ export function ModelPicker({
           setProviderIdx(fullProviderIdx)
         }
 
+        if (providerUsesModelGroups(provider)) {
+          setStage('group')
+          setGroupIdx(0)
+        } else {
+          setStage('model')
+        }
+        setModelIdx(0)
+        setFilter('')
+
+        return
+      }
+
+      if (stage === 'group') {
+        const group = filteredGroups[groupIdx]
+        if (!group) {
+          return
+        }
+        const fullGroupIdx = modelGroups.findIndex(g => g.id === group.id)
+        if (fullGroupIdx >= 0) {
+          setGroupIdx(fullGroupIdx)
+        }
         setStage('model')
         setModelIdx(0)
         setFilter('')
@@ -384,9 +461,16 @@ export function ModelPicker({
       const model = models[modelIdx]
 
       if (provider && model) {
-        onSelect(
-          `${model} --provider ${provider.slug}${allowPersistGlobal && persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`
-        )
+        const persistSuffix =
+          allowPersistGlobal && persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`
+        if (providerUsesModelGroups(provider) && selectedGroup) {
+          const entry = groupedEntryByLabel.get(model)
+          if (entry) {
+            onSelect(buildOmnirouteSelectCommand(provider.slug, selectedGroup, entry, persistSuffix))
+            return
+          }
+        }
+        onSelect(`${model} --provider ${provider.slug}${persistSuffix}`)
       } else {
         setStage('provider')
       }
@@ -553,7 +637,9 @@ export function ModelPicker({
   if (stage === 'provider') {
     const rows = filteredProviderRows.map(({ provider: p, name }) => {
       const authMark = p.authenticated === false ? '○' : p.is_current ? '*' : '●'
-      const modelCount = p.total_models ?? p.models?.length ?? 0
+      const modelCount = providerUsesModelGroups(p)
+        ? (p.model_groups?.reduce((n, g) => n + g.entries.length, 0) ?? 0)
+        : (p.total_models ?? p.models?.length ?? 0)
 
       const suffix =
         p.authenticated === false ? (p.auth_type === 'api_key' ? '(no key)' : '(needs setup)') : `${modelCount} models`
@@ -629,18 +715,84 @@ export function ModelPicker({
     )
   }
 
+  // ── OmniRoute group stage (Auto | Models) ─────────────────────────────
+  if (stage === 'group' && provider) {
+    const rows = filteredGroups.map(g => g.label)
+    const { items, offset } = windowItems(rows, groupIdx, VISIBLE)
+    const noMatches = !!filter.trim() && rows.length === 0
+
+    return (
+      <Box flexDirection="column" width={width}>
+        <Text bold color={t.color.accent} wrap="truncate-end">
+          Select routing mode (step 2/3)
+        </Text>
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          {filteredProviderRows[providerIdx]?.name || provider.name} · Esc back
+        </Text>
+        <Text color={filter ? t.color.accent : t.color.muted} wrap="truncate-end">
+          {filter ? `filter: ${filter}▎` : 'type to filter · ↑/↓ select'}
+        </Text>
+        <Text color={t.color.muted} wrap="truncate-end">
+          {offset > 0 ? ` ↑ ${offset} more` : ' '}
+        </Text>
+
+        {noMatches ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            no groups match filter
+          </Text>
+        ) : (
+          Array.from({ length: VISIBLE }, (_, i) => {
+            const row = items[i]
+            const idx = offset + i
+
+            if (!row) {
+              return (
+                <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
+                  {' '}
+                </Text>
+              )
+            }
+
+            const prefix = groupIdx === idx ? '▸ ' : '  '
+
+            return (
+              <Text
+                color={t.color.muted}
+                {...chipRowProps(t, groupIdx === idx)}
+                key={`${provider.slug}:group:${idx}:${row}`}
+                wrap="truncate-end"
+              >
+                {prefix}
+                {idx + 1}. {row}
+              </Text>
+            )
+          })
+        )}
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          {offset + VISIBLE < rows.length ? ` ↓ ${rows.length - offset - VISIBLE} more` : ' '}
+        </Text>
+        <OverlayHint t={t}>↑/↓ select · Enter continue · Esc clear/back · q close</OverlayHint>
+      </Box>
+    )
+  }
+
   // ── Model selection stage ────────────────────────────────────────────
   const { items, offset } = windowItems(models, modelIdx, VISIBLE)
   const noModelMatches = !!filter.trim() && models.length === 0
 
+  const modelStepLabel = providerUsesModelGroups(provider) ? 'step 3/3' : 'step 2/2'
+
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.accent} wrap="truncate-end">
-        Select model (step 2/2)
+        Select model ({modelStepLabel})
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {filteredProviderRows[providerIdx]?.name || '(unknown provider)'} · Esc back
+        {filteredProviderRows[providerIdx]?.name || '(unknown provider)'}
+        {selectedGroup ? ` · ${selectedGroup.label}` : ''} · Esc back
       </Text>
       <Text color={filter ? t.color.accent : t.color.muted} wrap="truncate-end">
         {filter ? `filter: ${filter}▎` : 'type to filter · ↑/↓ select'}

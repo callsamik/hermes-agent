@@ -9199,6 +9199,7 @@ def _define_discord_view_classes() -> None:
             self.resolved = False
             self._selected_provider: str = ""
             self._pending_expensive_model: str = ""
+            self._picker_entries: list = []
 
             self._build_provider_select()
 
@@ -9260,7 +9261,28 @@ def _define_discord_view_classes() -> None:
             if not provider:
                 return
 
-            models = provider.get("models", [])
+            self._picker_entries = []
+            if provider_slug == "omniroute":
+                try:
+                    from hermes_cli.omniroute_picker import (
+                        build_platform_omniroute_picker_entries,
+                        provider_has_model_groups,
+                    )
+
+                    if provider_has_model_groups(provider):
+                        self._picker_entries = build_platform_omniroute_picker_entries(
+                            provider.get("model_groups") or []
+                        )
+                        models = [
+                            str(e.get("wire_model") or e.get("id") or "")
+                            for e in self._picker_entries
+                        ]
+                    else:
+                        models = provider.get("models", [])
+                except Exception:
+                    models = provider.get("models", [])
+            else:
+                models = provider.get("models", [])
             if not models:
                 return
 
@@ -9280,7 +9302,26 @@ def _define_discord_view_classes() -> None:
             for idx, chunk in enumerate(chunks):
                 options = []
                 for model_id in chunk:
-                    short = model_id.split("/")[-1] if "/" in model_id else model_id
+                    if self._picker_entries:
+                        entry = next(
+                            (
+                                e
+                                for e in self._picker_entries
+                                if str(e.get("wire_model") or e.get("id") or "")
+                                == model_id
+                            ),
+                            None,
+                        )
+                        short = str(
+                            (entry or {}).get("label")
+                            or (
+                                model_id.split("/")[-1]
+                                if "/" in model_id
+                                else model_id
+                            )
+                        )
+                    else:
+                        short = model_id.split("/")[-1] if "/" in model_id else model_id
                     options.append(
                         discord.SelectOption(
                             label=_truncate_discord_component_text(
@@ -9370,12 +9411,16 @@ def _define_discord_view_classes() -> None:
             # `shown` counts models actually rendered across the partitioned
             # select menus (up to 3×25 = 75); the old code hard-capped at 25
             # and silently dropped the tail (e.g. Nous `:free` Portal picks).
-            total = provider.get("total_models", 0) if provider else 0
-            shown = (
-                min(len(provider.get("models", [])), _DISCORD_MODEL_SELECT_CAPACITY)
-                if provider
-                else 0
-            )
+            if self._picker_entries:
+                total = len(self._picker_entries)
+                shown = min(total, _DISCORD_MODEL_SELECT_CAPACITY)
+            else:
+                total = provider.get("total_models", 0) if provider else 0
+                shown = (
+                    min(len(provider.get("models", [])), _DISCORD_MODEL_SELECT_CAPACITY)
+                    if provider
+                    else 0
+                )
             extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
 
             await interaction.response.edit_message(
@@ -9414,11 +9459,31 @@ def _define_discord_view_classes() -> None:
                 view=None,
             )
 
+            switch_kw: dict[str, str] = {}
+            if self._picker_entries and self._selected_provider == "omniroute":
+                from hermes_cli.omniroute_picker import omniroute_picker_switch_kwargs
+
+                entry = next(
+                    (
+                        e
+                        for e in self._picker_entries
+                        if str(e.get("wire_model") or e.get("id") or "") == model_id
+                    ),
+                    None,
+                )
+                if entry is not None:
+                    switch_kw = omniroute_picker_switch_kwargs(
+                        entry.get("_picker_group") or {}, entry
+                    )
+                    model_id = switch_kw.get("raw_input", model_id)
+
             try:
                 result_text = await self.on_model_selected(
                     str(interaction.channel_id),
                     model_id,
                     self._selected_provider,
+                    omniroute_profile=switch_kw.get("omniroute_profile", ""),
+                    omniroute_routing_mode=switch_kw.get("omniroute_routing_mode", ""),
                 )
             except Exception as exc:
                 result_text = f"Error switching model: {exc}"
