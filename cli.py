@@ -11082,6 +11082,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    omniroute_routing_mode=getattr(
+                        result, "omniroute_routing_mode", ""
+                    )
+                    or "",
+                    omniroute_profile=getattr(result, "omniroute_profile", "")
+                    or "",
                 )
             except Exception as exc:
                 # The agent rolled itself back to the old working model/client.
@@ -11177,6 +11183,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._close_model_picker()
                 return
             provider_data = providers[selected]
+            from hermes_cli.omniroute_picker import provider_has_model_groups
+
+            if provider_has_model_groups(provider_data):
+                state["stage"] = "group"
+                state["provider_data"] = provider_data
+                state["group_list"] = provider_data.get("model_groups") or []
+                state["selected"] = 0
+                state["filter"] = ""
+                state["_filtered_pairs"] = None
+                state.pop("group_data", None)
+                state.pop("model_entries", None)
+                self._invalidate(min_interval=0.0)
+                return
             # Use the curated model list from list_authenticated_providers()
             # (same lists as `hermes model` and gateway pickers).
             # Only fall back to the live provider catalog when the curated
@@ -11198,6 +11217,46 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             state["_filtered_pairs"] = None
             self._invalidate(min_interval=0.0)
             return
+        if stage == "group":
+            provider_data = state.get("provider_data") or {}
+            group_list = state.get("group_list") or []
+            back_idx = len(group_list)
+            cancel_idx = len(group_list) + 1
+            if selected == back_idx:
+                state["stage"] = "provider"
+                state["filter"] = ""
+                state["_filtered_pairs"] = None
+                state["selected"] = next(
+                    (
+                        i
+                        for i, p in enumerate(state.get("providers") or [])
+                        if p.get("slug") == provider_data.get("slug")
+                    ),
+                    0,
+                )
+                self._invalidate(min_interval=0.0)
+                return
+            if selected >= cancel_idx:
+                self._close_model_picker()
+                return
+            if 0 <= selected < len(group_list):
+                chosen_group = group_list[selected]
+                entries = chosen_group.get("entries") or []
+                state["stage"] = "model"
+                state["group_data"] = chosen_group
+                state["model_entries"] = entries
+                state["model_list"] = [
+                    str(e.get("label") or e.get("id") or "")
+                    for e in entries
+                    if isinstance(e, dict)
+                ]
+                state["selected"] = 0
+                state["filter"] = ""
+                state["_filtered_pairs"] = None
+                self._invalidate(min_interval=0.0)
+                return
+            self._close_model_picker()
+            return
         if stage == "model":
             provider_data = state.get("provider_data") or {}
             model_list = state.get("model_list") or []
@@ -11212,10 +11271,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             back_idx = len(visible_labels)
             cancel_idx = len(visible_labels) + 1
             if selected == back_idx:
-                state["stage"] = "provider"
-                state["filter"] = ""
-                state["_filtered_pairs"] = None
-                state["selected"] = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
+                if state.get("group_list"):
+                    state["stage"] = "group"
+                    state.pop("group_data", None)
+                    state.pop("model_entries", None)
+                    state["filter"] = ""
+                    state["_filtered_pairs"] = None
+                    state["selected"] = 0
+                else:
+                    state["stage"] = "provider"
+                    state["filter"] = ""
+                    state["_filtered_pairs"] = None
+                    state["selected"] = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
                 self._invalidate(min_interval=0.0)
                 return
             if selected >= cancel_idx:
@@ -11223,9 +11290,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 return
             if 0 <= selected < len(visible_labels):
                 from hermes_cli.model_switch import switch_model
+                from hermes_cli.omniroute_picker import (
+                    omniroute_picker_switch_kwargs,
+                    resolve_model_picker_entry_by_label,
+                )
+
                 chosen_model = visible_labels[selected]
+                switch_kw: dict = {}
+                group_data = state.get("group_data")
+                model_entries = state.get("model_entries") or []
+                if group_data and model_entries:
+                    entry = resolve_model_picker_entry_by_label(
+                        model_entries, chosen_model
+                    )
+                    if entry is not None:
+                        switch_kw = omniroute_picker_switch_kwargs(group_data, entry)
                 result = switch_model(
-                    raw_input=chosen_model,
+                    raw_input=switch_kw.get("raw_input", chosen_model),
                     current_provider=self.provider or "",
                     current_model=self.model or "",
                     current_base_url=self.base_url or "",
@@ -11234,6 +11315,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     explicit_provider=provider_data.get("slug"),
                     user_providers=state.get("user_provs"),
                     custom_providers=state.get("custom_provs"),
+                    omniroute_profile=switch_kw.get("omniroute_profile", ""),
+                    omniroute_routing_mode=switch_kw.get("omniroute_routing_mode", ""),
                 )
                 # Capture before close — picker state is cleared on close.
                 _picker_custom_provs = state.get("custom_provs")
@@ -11377,6 +11460,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             explicit_provider=explicit_provider,
             user_providers=user_provs,
             custom_providers=custom_provs,
+            omniroute_profile=request.omniroute_profile,
+            omniroute_routing_mode=request.omniroute_routing_mode,
         )
 
         if not result.success:
@@ -11472,6 +11557,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    omniroute_routing_mode=getattr(
+                        result, "omniroute_routing_mode", ""
+                    )
+                    or "",
+                    omniroute_profile=getattr(result, "omniroute_profile", "")
+                    or "",
                 )
             except Exception as exc:
                 # Agent rolled itself back; roll the CLI back too and abort so a
@@ -18337,6 +18428,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 return
             if state.get("stage") == "provider":
                 max_idx = len(state.get("providers") or [])
+            elif state.get("stage") == "group":
+                max_idx = len(state.get("group_list") or []) + 1
             else:
                 # +1 for "← Back" and Cancel over the filtered visible rows.
                 _fp = state.get("_filtered_pairs")
@@ -19746,19 +19839,38 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if stage == "provider":
                 title = "⚙ Model Picker — Select Provider"
                 choices = []
+                from hermes_cli.omniroute_picker import provider_inventory_model_count
+
                 _providers = state.get("providers")
                 for p in _providers if isinstance(_providers, list) else []:
-                    count = p.get("total_models", len(p.get("models", [])))
+                    count = provider_inventory_model_count(p)
                     label = f"{p['name']} ({count} model{'s' if count != 1 else ''})"
                     if p.get("is_current"):
                         label += "  ← current"
                     choices.append(label)
                 choices.append("Cancel")
                 hint = f"Current: {state.get('current_model', 'unknown')} on {state.get('current_provider', 'unknown')}"
+            elif stage == "group":
+                provider_data = state.get("provider_data") or {}
+                group_list = state.get("group_list") or []
+                title = (
+                    f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))} "
+                    "— Auto or Models"
+                )
+                choices = [
+                    str(g.get("label") or g.get("id") or "")
+                    for g in group_list
+                    if isinstance(g, dict)
+                ] + ["← Back", "Cancel"]
+                hint = "Select routing mode — Auto uses workload profiles; Models picks a catalog id"
             else:
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
+                group_data = state.get("group_data") or {}
+                group_label = group_data.get("label") or group_data.get("id") or ""
                 title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
+                if group_label:
+                    title += f" — {group_label}"
                 # Fuzzy filter: narrow the concrete model list by the typed
                 # query. Selection still resolves to a real entry (see the
                 # filtered_pairs index mapping in the selection handler), so

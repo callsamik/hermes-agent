@@ -97,3 +97,48 @@ def apply_omniroute_to_model_cfg(
         prof = "general"
     model_cfg["omniroute_envelope"] = {"profile": prof}
     return model_cfg
+
+
+def provider_has_model_groups(provider_row: dict) -> bool:
+    groups = provider_row.get("model_groups")
+    return isinstance(groups, list) and bool(groups)
+
+
+def provider_inventory_model_count(provider_row: dict) -> int:
+    if provider_has_model_groups(provider_row):
+        total = 0
+        for group in provider_row["model_groups"]:
+            if isinstance(group, dict):
+                total += len(group.get("entries") or [])
+        return total
+    models = provider_row.get("models") or []
+    return int(provider_row.get("total_models") or len(models))
+
+
+def resolve_model_picker_entry_by_label(
+    entries: list, label: str
+) -> dict | None:
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("label") or "") == label or str(entry.get("id") or "") == label:
+            return entry
+    return None
+
+
+def omniroute_picker_switch_kwargs(group: dict, entry: dict) -> dict[str, str]:
+    """Build ``switch_model`` kwargs for a grouped OmniRoute picker selection."""
+    routing_mode = str(group.get("routing_mode") or "auto").strip().lower()
+    if routing_mode == "explicit":
+        wire = str(entry.get("wire_model") or entry.get("id") or "")
+        return {
+            "raw_input": wire,
+            "omniroute_routing_mode": "explicit",
+            "omniroute_profile": "",
+        }
+    profile = str(entry.get("profile") or entry.get("id") or "general")
+    return {
+        "raw_input": "auto",
+        "omniroute_routing_mode": "auto",
+        "omniroute_profile": profile,
+    }

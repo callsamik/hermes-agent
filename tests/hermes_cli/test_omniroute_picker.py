@@ -60,3 +60,45 @@ def test_build_omniroute_model_groups_structure():
     assert [e["wire_model"] for e in groups[1]["entries"]] == [
         "anthropic/claude-sonnet-4-20250514"
     ]
+
+
+def test_provider_inventory_model_count_uses_groups():
+    from hermes_cli.omniroute_picker import (
+        provider_has_model_groups,
+        provider_inventory_model_count,
+    )
+
+    row = {
+        "slug": "omniroute",
+        "models": [],
+        "model_groups": [
+            {"entries": [{"id": "general"}, {"id": "coding"}]},
+            {"entries": [{"id": "anthropic/claude-sonnet-4-20250514"}]},
+        ],
+    }
+    assert provider_has_model_groups(row) is True
+    assert provider_inventory_model_count(row) == 3
+
+
+def test_omniroute_picker_switch_kwargs_auto_and_explicit():
+    from hermes_cli.omniroute_picker import omniroute_picker_switch_kwargs
+
+    auto_group = {"routing_mode": "auto"}
+    coding = {"id": "coding", "label": "Coding", "profile": "coding", "wire_model": "auto"}
+    assert omniroute_picker_switch_kwargs(auto_group, coding) == {
+        "raw_input": "auto",
+        "omniroute_routing_mode": "auto",
+        "omniroute_profile": "coding",
+    }
+
+    explicit_group = {"routing_mode": "explicit"}
+    vendor = {
+        "id": "anthropic/claude-sonnet-4-20250514",
+        "label": "anthropic/claude-sonnet-4-20250514",
+        "wire_model": "anthropic/claude-sonnet-4-20250514",
+    }
+    assert omniroute_picker_switch_kwargs(explicit_group, vendor) == {
+        "raw_input": "anthropic/claude-sonnet-4-20250514",
+        "omniroute_routing_mode": "explicit",
+        "omniroute_profile": "",
+    }
