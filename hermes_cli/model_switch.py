@@ -627,6 +627,8 @@ class ModelSwitchResult:
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    omniroute_profile: str = ""
+    omniroute_routing_mode: str = ""
 
 
 @dataclass(frozen=True)
@@ -639,6 +641,8 @@ class ModelFlagParseResult:
     force_refresh: bool = False
     is_session: bool = False
     is_once: bool = False
+    omniroute_profile: str = ""
+    omniroute_routing_mode: str = ""
 # ---------------------------------------------------------------------------
 # Flag parsing
 # ---------------------------------------------------------------------------
@@ -671,11 +675,17 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
     force_refresh = False
     is_session = False
     is_once = False
+    omniroute_profile = ""
+    omniroute_routing_mode = ""
 
     # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
     # A single Unicode dash before a flag keyword becomes "--"
     import re as _re
-    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|session|refresh|once)', r'--\1', raw_args)
+    raw_args = _re.sub(
+        r'[\u2012\u2013\u2014\u2015](provider|global|session|refresh|once|profile|routing-mode|routing_mode)',
+        r'--\1',
+        raw_args,
+    )
 
     # Keep this hand-rolled because model IDs may contain colons/slashes and
     # the historical parser did not require shell quoting.
@@ -698,11 +708,20 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
         elif parts[i] == "--provider" and i + 1 < len(parts):
             explicit_provider = parts[i + 1]
             i += 2
+        elif parts[i] == "--profile" and i + 1 < len(parts):
+            omniroute_profile = parts[i + 1]
+            i += 2
+        elif parts[i] in ("--routing-mode", "--routing_mode") and i + 1 < len(parts):
+            omniroute_routing_mode = parts[i + 1]
+            i += 2
         else:
             filtered.append(parts[i])
             i += 1
 
     model_input = " ".join(filtered).strip()
+    mode = (omniroute_routing_mode or "").strip().lower()
+    if mode == "explicit":
+        omniroute_profile = ""
     return ModelFlagParseResult(
         model_input=model_input,
         explicit_provider=explicit_provider,
@@ -710,6 +729,8 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
         force_refresh=force_refresh,
         is_session=is_session,
         is_once=is_once,
+        omniroute_profile=omniroute_profile,
+        omniroute_routing_mode=omniroute_routing_mode,
     )
 
 
@@ -823,6 +844,8 @@ class ModelSwitchRequest:
     force_refresh: bool = False
     scope: str = "default"
     errors: tuple = ()
+    omniroute_profile: str = ""
+    omniroute_routing_mode: str = ""
 
     # Compat properties so a ModelSwitchRequest can be passed anywhere a
     # ModelFlagParseResult was accepted (e.g. tui_gateway._apply_model_switch).
@@ -839,6 +862,8 @@ class ModelSwitchRequest:
             force_refresh=self.force_refresh,
             is_session=self.is_session,
             is_once=self.is_once,
+            omniroute_profile=self.omniroute_profile,
+            omniroute_routing_mode=self.omniroute_routing_mode,
         )
 
     def error_messages(self) -> list:
@@ -892,6 +917,8 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
         force_refresh=parsed.force_refresh,
         scope=scope,
         errors=tuple(errors),
+        omniroute_profile=parsed.omniroute_profile,
+        omniroute_routing_mode=parsed.omniroute_routing_mode,
     )
 
 
@@ -1446,6 +1473,8 @@ def switch_model(
     explicit_provider: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
+    omniroute_profile: str = "",
+    omniroute_routing_mode: str = "",
 ) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 
@@ -2183,6 +2212,21 @@ def switch_model(
     if hermes_warn:
         warnings.append(hermes_warn)
 
+    profile_out = (omniroute_profile or "").strip()
+    routing_mode_out = (omniroute_routing_mode or "").strip().lower()
+    if target_provider == "omniroute":
+        if routing_mode_out == "explicit":
+            profile_out = ""
+            routing_mode_out = "explicit"
+        elif routing_mode_out == "auto" or profile_out:
+            routing_mode_out = "auto"
+            new_model = "auto"
+            if not profile_out:
+                profile_out = "general"
+        elif (new_model or "").strip().lower() == "auto":
+            routing_mode_out = "auto"
+            profile_out = profile_out or "general"
+
     # --- Build result ---
     return ModelSwitchResult(
         success=True,
@@ -2198,6 +2242,8 @@ def switch_model(
         capabilities=capabilities,
         model_info=model_info,
         is_global=is_global,
+        omniroute_profile=profile_out,
+        omniroute_routing_mode=routing_mode_out,
     )
 
 
