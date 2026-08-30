@@ -1795,6 +1795,8 @@ class GatewaySlashCommandsMixin:
             is_once=one_turn,
             explicit_provider=explicit_provider,
         )
+        omniroute_profile = request.omniroute_profile
+        omniroute_routing_mode = request.omniroute_routing_mode
 
         # --refresh: bust the disk cache so the picker shows live data.
         if force_refresh:
@@ -1890,7 +1892,12 @@ class GatewaySlashCommandsMixin:
                     _picker_profile_home = _command_profile_home
 
                     async def _on_model_selected_scoped(
-                        _chat_id: str, model_id: str, provider_slug: str
+                        _chat_id: str,
+                        model_id: str,
+                        provider_slug: str,
+                        *,
+                        omniroute_profile: str = "",
+                        omniroute_routing_mode: str = "",
                     ) -> str:
                         """Perform the model switch and return confirmation text."""
                         skew_error = _model_switch_skew_guard()
@@ -1911,6 +1918,8 @@ class GatewaySlashCommandsMixin:
                             explicit_provider=provider_slug,
                             user_providers=user_provs,
                             custom_providers=custom_provs,
+                            omniroute_profile=omniroute_profile,
+                            omniroute_routing_mode=omniroute_routing_mode,
                         )
                         if not result.success:
                             return t("gateway.model.error_prefix", error=result.error_message)
@@ -1950,6 +1959,8 @@ class GatewaySlashCommandsMixin:
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
+                                    omniroute_routing_mode=result.omniroute_routing_mode,
+                                    omniroute_profile=result.omniroute_profile,
                                 )
                             except Exception as exc:
                                 # The in-place swap rolled the agent back to the
@@ -2010,6 +2021,24 @@ class GatewaySlashCommandsMixin:
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
                         }
+                        if (
+                            result.target_provider == "omniroute"
+                            and result.omniroute_routing_mode
+                        ):
+                            _self._session_model_overrides[_session_key][
+                                "omniroute_routing_mode"
+                            ] = result.omniroute_routing_mode
+                            if (
+                                result.omniroute_routing_mode == "auto"
+                                and result.omniroute_profile
+                            ):
+                                _self._session_model_overrides[_session_key][
+                                    "omniroute_envelope"
+                                ] = {"profile": result.omniroute_profile}
+                            else:
+                                _self._session_model_overrides[_session_key].pop(
+                                    "omniroute_envelope", None
+                                )
 
                         # Write-through the non-secret parts to the session
                         # store so the picked model survives a gateway restart
@@ -2084,6 +2113,14 @@ class GatewaySlashCommandsMixin:
                                         _persist_model_cfg.pop("api_mode", None)
                                 else:
                                     clear_model_endpoint_credentials(_persist_model_cfg, clear_base_url=True)
+                                from hermes_cli.omniroute_picker import apply_omniroute_to_model_cfg
+
+                                apply_omniroute_to_model_cfg(
+                                    _persist_model_cfg,
+                                    provider=result.target_provider,
+                                    routing_mode=result.omniroute_routing_mode,
+                                    profile=result.omniroute_profile,
+                                )
                                 from hermes_cli.config import save_config
                                 save_config(_persist_cfg)
                             except Exception as e:
@@ -2140,17 +2177,30 @@ class GatewaySlashCommandsMixin:
                         return "\n".join(lines)
 
                     async def _on_model_selected(
-                        _chat_id: str, model_id: str, provider_slug: str
+                        _chat_id: str,
+                        model_id: str,
+                        provider_slug: str,
+                        *,
+                        omniroute_profile: str = "",
+                        omniroute_routing_mode: str = "",
                     ) -> str:
                         if _picker_profile_home is None:
                             return await _on_model_selected_scoped(
-                                _chat_id, model_id, provider_slug
+                                _chat_id,
+                                model_id,
+                                provider_slug,
+                                omniroute_profile=omniroute_profile,
+                                omniroute_routing_mode=omniroute_routing_mode,
                             )
                         from gateway.run import _profile_runtime_scope
 
                         with _profile_runtime_scope(_picker_profile_home):
                             return await _on_model_selected_scoped(
-                                _chat_id, model_id, provider_slug
+                                _chat_id,
+                                model_id,
+                                provider_slug,
+                                omniroute_profile=omniroute_profile,
+                                omniroute_routing_mode=omniroute_routing_mode,
                             )
 
                     metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
@@ -2220,6 +2270,8 @@ class GatewaySlashCommandsMixin:
             explicit_provider=explicit_provider,
             user_providers=user_provs,
             custom_providers=custom_provs,
+            omniroute_profile=omniroute_profile,
+            omniroute_routing_mode=omniroute_routing_mode,
         )
 
         if not result.success:
@@ -2263,6 +2315,8 @@ class GatewaySlashCommandsMixin:
                         api_key=result.api_key,
                         base_url=result.base_url,
                         api_mode=result.api_mode,
+                        omniroute_routing_mode=result.omniroute_routing_mode,
+                        omniroute_profile=result.omniroute_profile,
                     )
                 except Exception as exc:
                     # In-place swap rolled the agent back to the OLD working
@@ -2322,6 +2376,18 @@ class GatewaySlashCommandsMixin:
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
             }
+            if result.target_provider == "omniroute" and result.omniroute_routing_mode:
+                self._session_model_overrides[session_key][
+                    "omniroute_routing_mode"
+                ] = result.omniroute_routing_mode
+                if result.omniroute_routing_mode == "auto" and result.omniroute_profile:
+                    self._session_model_overrides[session_key][
+                        "omniroute_envelope"
+                    ] = {"profile": result.omniroute_profile}
+                else:
+                    self._session_model_overrides[session_key].pop(
+                        "omniroute_envelope", None
+                    )
             if one_turn:
                 if not hasattr(self, "_pending_one_turn_model_restores"):
                     self._pending_one_turn_model_restores = {}
@@ -2410,6 +2476,14 @@ class GatewaySlashCommandsMixin:
                             model_cfg.pop("api_mode", None)
                     else:
                         clear_model_endpoint_credentials(model_cfg, clear_base_url=True)
+                    from hermes_cli.omniroute_picker import apply_omniroute_to_model_cfg
+
+                    apply_omniroute_to_model_cfg(
+                        model_cfg,
+                        provider=result.target_provider,
+                        routing_mode=result.omniroute_routing_mode,
+                        profile=result.omniroute_profile,
+                    )
                     from hermes_cli.config import save_config
                     save_config(cfg)
                 except Exception as e:

@@ -4032,4 +4032,15 @@ def list_picker_providers(
             continue
         filtered.append(p)
 
+    from hermes_cli.inventory import _apply_omniroute_model_groups
+    from hermes_cli.omniroute_picker import (
+        provider_has_model_groups,
+        provider_inventory_model_count,
+    )
+
+    _apply_omniroute_model_groups(filtered)
+    for p in filtered:
+        if provider_has_model_groups(p):
+            p["total_models"] = provider_inventory_model_count(p)
+
     return filtered

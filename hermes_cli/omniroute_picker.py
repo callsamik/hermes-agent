@@ -126,6 +126,55 @@ def resolve_model_picker_entry_by_label(
     return None
 
 
+def build_platform_omniroute_picker_entries(
+    model_groups: list[dict],
+) -> list[dict]:
+    """v1 Telegram/Discord picker: Auto (general) + filtered explicit models.
+
+    v1.1: replace the single Auto row with the full eight-profile keyboard
+    from the ``auto`` group's entries.
+    """
+    auto_group: dict = {}
+    models_group: dict = {}
+    for group in model_groups:
+        if not isinstance(group, dict):
+            continue
+        gid = str(group.get("id") or "")
+        if gid == "auto":
+            auto_group = group
+        elif gid == "models":
+            models_group = group
+
+    entries: list[dict] = []
+    general: dict | None = None
+    for entry in auto_group.get("entries") or []:
+        if not isinstance(entry, dict):
+            continue
+        profile = str(entry.get("profile") or entry.get("id") or "")
+        if profile == "general":
+            general = dict(entry)
+            break
+    if general is None:
+        general = {
+            "id": "general",
+            "label": "Auto (general)",
+            "profile": "general",
+            "wire_model": "auto",
+        }
+    general = dict(general)
+    general["label"] = "Auto (general)"
+    general["_picker_group"] = {"routing_mode": "auto", "id": "auto"}
+    entries.append(general)
+
+    explicit_group = {"routing_mode": "explicit", "id": "models"}
+    for entry in models_group.get("entries") or []:
+        if isinstance(entry, dict):
+            row = dict(entry)
+            row["_picker_group"] = explicit_group
+            entries.append(row)
+    return entries
+
+
 def omniroute_picker_switch_kwargs(group: dict, entry: dict) -> dict[str, str]:
     """Build ``switch_model`` kwargs for a grouped OmniRoute picker selection."""
     routing_mode = str(group.get("routing_mode") or "auto").strip().lower()
@@ -142,3 +191,19 @@ def omniroute_picker_switch_kwargs(group: dict, entry: dict) -> dict[str, str]:
         "omniroute_routing_mode": "auto",
         "omniroute_profile": profile,
     }
+
+
+def platform_picker_switch_at_index(
+    picker_entries: list[dict] | None,
+    model_list: list[str],
+    idx: int,
+) -> tuple[str, dict[str, str]]:
+    """Resolve wire model + OmniRoute kwargs for Telegram/Discord picker indices."""
+    if picker_entries and 0 <= idx < len(picker_entries):
+        entry = picker_entries[idx]
+        group = entry.get("_picker_group") or {}
+        kw = omniroute_picker_switch_kwargs(group, entry)
+        return kw["raw_input"], kw
+    if 0 <= idx < len(model_list):
+        return model_list[idx], {}
+    return "", {}
