@@ -146,6 +146,8 @@ class ModelAssignment(BaseModel):
     api_key: str = ""
     confirm_expensive_model: bool = False
     profile: Optional[str] = None
+    omniroute_profile: str = ""
+    omniroute_routing_mode: str = ""
 
 
 class MoaModelSlot(BaseModel):

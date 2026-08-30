@@ -64,3 +64,36 @@ def build_omniroute_model_groups(model_ids: list[str]) -> list[dict[str, object]
             "entries": model_entries,
         },
     ]
+
+
+def apply_omniroute_to_model_cfg(
+    model_cfg: dict,
+    *,
+    provider: str,
+    routing_mode: str = "",
+    profile: str = "",
+) -> dict:
+    """Persist OmniRoute routing mode + envelope on a model config dict.
+
+    Explicit mode always clears any stale ``omniroute_envelope``. Non-OmniRoute
+    providers drop omniroute keys entirely.
+    """
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+    prov = (provider or "").strip().lower()
+    if prov != "omniroute":
+        model_cfg.pop("omniroute_routing_mode", None)
+        model_cfg.pop("omniroute_envelope", None)
+        return model_cfg
+
+    mode = (routing_mode or "auto").strip().lower()
+    model_cfg["omniroute_routing_mode"] = mode
+    if mode == "explicit":
+        model_cfg.pop("omniroute_envelope", None)
+        return model_cfg
+
+    prof = (profile or "general").strip() or "general"
+    if prof not in {p for p, _ in OMNIROUTE_PROFILES}:
+        prof = "general"
+    model_cfg["omniroute_envelope"] = {"profile": prof}
+    return model_cfg

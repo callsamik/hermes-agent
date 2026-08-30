@@ -7449,6 +7449,12 @@ def get_auxiliary_models(profile: Optional[str] = None):
                 "provider": str(model_cfg.get("provider", "") or ""),
                 "model": str(model_cfg.get("default", model_cfg.get("name", "")) or ""),
             }
+            mode = str(model_cfg.get("omniroute_routing_mode") or "").strip()
+            if mode:
+                main["omniroute_routing_mode"] = mode
+            env = model_cfg.get("omniroute_envelope")
+            if isinstance(env, dict) and mode == "auto":
+                main["omniroute_envelope"] = env
         else:
             main = {"provider": "", "model": str(model_cfg) if model_cfg else ""}
 
@@ -7565,6 +7571,9 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
     base_url = (body.base_url or "").strip()
     api_key = (body.api_key or "").strip()
 
+    omniroute_profile = (body.omniroute_profile or "").strip()
+    omniroute_routing_mode = (body.omniroute_routing_mode or "").strip()
+
     if scope not in {"main", "auxiliary"}:
         raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
 
@@ -7600,7 +7609,14 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         def _apply_assignment():
             with _profile_scope(body.profile or profile):
                 return _apply_model_assignment_sync(
-                    scope, provider, model, task, base_url, api_key
+                    scope,
+                    provider,
+                    model,
+                    task,
+                    base_url,
+                    api_key,
+                    omniroute_profile=omniroute_profile,
+                    omniroute_routing_mode=omniroute_routing_mode,
                 )
 
         return await asyncio.to_thread(_apply_assignment)
@@ -7612,7 +7628,15 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
 
 
 def _apply_model_assignment_sync(
-    scope: str, provider: str, model: str, task: str, base_url: str, api_key: str = ""
+    scope: str,
+    provider: str,
+    model: str,
+    task: str,
+    base_url: str,
+    api_key: str = "",
+    *,
+    omniroute_profile: str = "",
+    omniroute_routing_mode: str = "",
 ):
     """Synchronous body of POST /api/model/set.
 
@@ -7635,6 +7659,19 @@ def _apply_model_assignment_sync(
         )
         if isinstance(provider_entry, dict) and provider_entry.get("api_key"):
             model_cfg["api_key"] = provider_entry["api_key"]
+        if omniroute_routing_mode or provider.strip().lower() == "omniroute":
+            from hermes_cli.omniroute_picker import apply_omniroute_to_model_cfg
+
+            apply_omniroute_to_model_cfg(
+                model_cfg,
+                provider=provider,
+                routing_mode=omniroute_routing_mode,
+                profile=omniroute_profile,
+            )
+        elif provider.strip().lower() != "omniroute":
+            from hermes_cli.omniroute_picker import apply_omniroute_to_model_cfg
+
+            apply_omniroute_to_model_cfg(model_cfg, provider=provider)
         cfg["model"] = model_cfg
 
         # When switching the main provider to Nous, mirror the CLI's

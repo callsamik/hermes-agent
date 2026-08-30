@@ -2405,9 +2405,24 @@ export interface ModelInfoResponse {
 
 // ── Model options / assignment types ──────────────────────────────────
 
+export interface ModelGroupEntry {
+  id: string;
+  label: string;
+  profile?: string;
+  wire_model: string;
+}
+
+export interface ModelOptionGroup {
+  id: string;
+  label: string;
+  routing_mode: "auto" | "explicit";
+  entries: ModelGroupEntry[];
+}
+
 export interface ModelOptionProvider {
   name: string;
   slug: string;
+  model_groups?: ModelOptionGroup[];
   models?: string[];
   total_models?: number;
   is_current?: boolean;
@@ -2432,7 +2447,12 @@ export interface AuxiliaryTaskAssignment {
 
 export interface AuxiliaryModelsResponse {
   tasks: AuxiliaryTaskAssignment[];
-  main: { provider: string; model: string };
+  main: {
+    provider: string;
+    model: string;
+    omniroute_routing_mode?: string;
+    omniroute_envelope?: { profile?: string };
+  };
 }
 
 export interface MoaModelSlot {
@@ -2479,6 +2499,8 @@ export interface ModelAssignmentRequest {
   base_url?: string;
   /** For auxiliary: task slot name, "" for all, "__reset__" to reset all. */
   task?: string;
+  omniroute_profile?: string;
+  omniroute_routing_mode?: "auto" | "explicit" | "";
 }
 
 /** An auxiliary task still pinned to a provider that differs from the
