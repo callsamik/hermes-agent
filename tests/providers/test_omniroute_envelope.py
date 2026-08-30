@@ -45,11 +45,45 @@ def test_omniroute_unknown_profile_coerces_to_general():
     assert body == {"omniroute": {"profile": "general"}}
 
 
-def test_coerce_omniroute_model_always_returns_auto():
+def test_coerce_auto_mode_returns_auto():
     profile = _profile()
 
     for model in (None, "", "auto", "auto/best-chat", "claude-sonnet"):
-        assert profile.coerce_omniroute_model(model) == "auto"
+        assert profile.coerce_model_id(model, routing_mode="auto") == "auto"
+
+
+def test_coerce_explicit_mode_preserves_model_id():
+    profile = _profile()
+    explicit = "anthropic/claude-sonnet-4-20250514"
+    assert profile.coerce_model_id(explicit, routing_mode="explicit") == explicit
+
+
+def test_build_extra_body_explicit_mode_empty():
+    assert _profile().build_extra_body(
+        omniroute_routing_mode="explicit",
+        omniroute_envelope={"profile": "coding"},
+    ) == {}
+
+
+def test_build_extra_body_auto_mode_keeps_envelope():
+    body = _profile().build_extra_body(
+        omniroute_routing_mode="auto",
+        omniroute_envelope={"profile": "coding"},
+    )
+    assert body == {"omniroute": {"profile": "coding"}}
+
+
+def test_explicit_mode_ignores_stale_envelope_in_context():
+    """Explicit wire must never attach a leftover auto envelope."""
+    body = _profile().build_extra_body(
+        omniroute_routing_mode="explicit",
+        omniroute_envelope={
+            "profile": "coding",
+            "constraints": {"max_cost": 0.5},
+        },
+    )
+    assert body == {}
+    assert "omniroute" not in body
 
 
 def test_chat_completions_coerces_omniroute_model_to_auto():
