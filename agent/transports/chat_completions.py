@@ -721,7 +721,9 @@ class ChatCompletionsTransport(ProviderTransport):
         """
         from providers.base import OMIT_TEMPERATURE
 
-        model = profile.coerce_model_id(model)
+        model = profile.coerce_model_id(
+            model, routing_mode=params.get("omniroute_routing_mode") or "auto"
+        )
 
         # Message preprocessing
         sanitized = profile.prepare_messages(sanitized)
@@ -822,6 +824,7 @@ class ChatCompletionsTransport(ProviderTransport):
             reasoning_config=reasoning_config,
             openrouter_min_coding_score=params.get("openrouter_min_coding_score"),
             omniroute_envelope=params.get("omniroute_envelope"),
+            omniroute_routing_mode=params.get("omniroute_routing_mode") or "auto",
         )
         if profile_body:
             extra_body.update(profile_body)

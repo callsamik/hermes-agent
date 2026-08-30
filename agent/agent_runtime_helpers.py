@@ -2611,7 +2611,8 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
-def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
+def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode='',
+                 omniroute_routing_mode='', omniroute_profile=''):
     """Switch the model/provider in-place for a live agent.
 
     Called by the /model command handlers (CLI and gateway) after
@@ -2680,6 +2681,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "_is_anthropic_oauth",
             "_config_context_length",
             "_reasoning_echo_flag",
+            "omniroute_routing_mode",
+            "omniroute_envelope",
         )
     }
     # _client_kwargs is a dict — snapshot a shallow copy so mutating the
@@ -2746,6 +2749,18 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             agent._transport_cache.clear()
         if api_key:
             agent.api_key = api_key
+
+        from agent.chat_completion_helpers import apply_omniroute_runtime
+
+        if (new_provider or "").strip().lower() == "omniroute":
+            apply_omniroute_runtime(
+                agent,
+                routing_mode=omniroute_routing_mode or "auto",
+                profile=omniroute_profile,
+            )
+        else:
+            agent.omniroute_routing_mode = ""
+            agent.omniroute_envelope = None
 
         # ── Reload credential pool for the new provider (issue #52727) ──
         # Without this, ``recover_with_credential_pool`` sees a
@@ -3009,6 +3024,8 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "compressor_context_length": _cc.context_length if _cc else 0,
         "compressor_api_mode": getattr(_cc, "api_mode", agent.api_mode) if _cc else agent.api_mode,
         "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
+        "omniroute_routing_mode": getattr(agent, "omniroute_routing_mode", ""),
+        "omniroute_envelope": getattr(agent, "omniroute_envelope", None),
     }
     if api_mode == "anthropic_messages":
         agent._primary_runtime.update({

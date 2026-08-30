@@ -104,3 +104,22 @@ def test_chat_completions_coerces_omniroute_model_to_auto():
     assert kwargs["extra_body"] == {
         "omniroute": {"profile": "general"}
     }
+
+
+def test_chat_completions_explicit_mode_no_envelope():
+    from agent.transports import get_transport
+
+    profile = _profile()
+    transport = get_transport("chat_completions")
+    explicit = "anthropic/claude-sonnet-4-20250514"
+    kwargs = transport.build_kwargs(
+        model=explicit,
+        messages=[{"role": "user", "content": "Hi"}],
+        tools=[],
+        provider_profile=profile,
+        provider_name="omniroute",
+        omniroute_routing_mode="explicit",
+        omniroute_envelope={"profile": "coding"},
+    )
+    assert kwargs["model"] == explicit
+    assert "omniroute" not in (kwargs.get("extra_body") or {})

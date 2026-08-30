@@ -3342,6 +3342,13 @@ def _ensure_session_db_row(session: dict) -> None:
     ):
         if val := override.get(src_key):
             model_config[cfg_key] = str(val)
+    mode = str(override.get("omniroute_routing_mode") or "").strip().lower()
+    if mode:
+        model_config["omniroute_routing_mode"] = mode
+        if mode == "auto":
+            env = override.get("omniroute_envelope")
+            if isinstance(env, dict):
+                model_config["omniroute_envelope"] = env
     # The composer override may carry the RESOLVED provider "custom" for a named
     # ``providers:`` / ``custom_providers:`` entry. Persisting bare "custom" here
     # (the very first DB write for a fresh desktop session, before the agent is
@@ -4625,6 +4632,13 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             "base_url": base_url or None,
             "api_mode": api_mode or None,
         }
+        mode = str(model_config.get("omniroute_routing_mode") or "").strip().lower()
+        if mode:
+            overrides["model_override"]["omniroute_routing_mode"] = mode
+            if mode == "auto":
+                env = model_config.get("omniroute_envelope")
+                if isinstance(env, dict):
+                    overrides["model_override"]["omniroute_envelope"] = env
     if provider:
         overrides["provider_override"] = provider
     if isinstance(reasoning_config, dict):
@@ -4696,6 +4710,21 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
         config["service_tier"] = service_tier
     else:
         config.pop("service_tier", None)
+
+    mode = str(getattr(agent, "omniroute_routing_mode", "") or "").strip().lower()
+    if provider.strip().lower() == "omniroute" and mode:
+        config["omniroute_routing_mode"] = mode
+        if mode == "explicit":
+            config.pop("omniroute_envelope", None)
+        else:
+            env = getattr(agent, "omniroute_envelope", None)
+            if isinstance(env, dict) and env.get("profile"):
+                config["omniroute_envelope"] = env
+            else:
+                config["omniroute_envelope"] = {"profile": "general"}
+    else:
+        config.pop("omniroute_routing_mode", None)
+        config.pop("omniroute_envelope", None)
 
     return config
 
@@ -5350,6 +5379,8 @@ def _apply_model_switch(
     else:
         model_input, explicit_provider, is_global_flag, _force_refresh, is_session = parsed_flags
         one_turn = False
+    omniroute_profile = getattr(parsed_flags, "omniroute_profile", "") or ""
+    omniroute_routing_mode = getattr(parsed_flags, "omniroute_routing_mode", "") or ""
     # Conflict validation delegates to the shared single-owner parser; the
     # TUI surfaces it as a raised ValueError (its historical behavior)
     # using the canonical error copy.
@@ -5420,6 +5451,8 @@ def _apply_model_switch(
         explicit_provider=explicit_provider,
         user_providers=user_provs,
         custom_providers=custom_provs,
+        omniroute_profile=omniroute_profile,
+        omniroute_routing_mode=omniroute_routing_mode,
     )
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
@@ -5477,6 +5510,8 @@ def _apply_model_switch(
                 api_key=result.api_key,
                 base_url=result.base_url,
                 api_mode=result.api_mode,
+                omniroute_routing_mode=result.omniroute_routing_mode,
+                omniroute_profile=result.omniroute_profile,
             )
         except Exception as exc:
             # The in-place swap rolled the agent back to the old working
@@ -5524,6 +5559,14 @@ def _apply_model_switch(
             "api_key": result.api_key,
             "api_mode": result.api_mode,
         }
+        if result.target_provider == "omniroute" and result.omniroute_routing_mode:
+            session["model_override"]["omniroute_routing_mode"] = (
+                result.omniroute_routing_mode
+            )
+            if result.omniroute_routing_mode == "auto" and result.omniroute_profile:
+                session["model_override"]["omniroute_envelope"] = {
+                    "profile": result.omniroute_profile,
+                }
     if persist_global:
         _persist_model_switch(result)
     return {
@@ -7579,7 +7622,7 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
-    return AIAgent(
+    agent = AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
         provider=runtime.get("provider"),
@@ -7626,6 +7669,22 @@ def _make_agent(
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )
+    if isinstance(model_override, dict):
+        from agent.chat_completion_helpers import (
+            apply_omniroute_runtime,
+            omniroute_override_from_source,
+        )
+
+        omni = omniroute_override_from_source(model_override)
+        if omni.get("omniroute_routing_mode"):
+            env = omni.get("omniroute_envelope")
+            apply_omniroute_runtime(
+                agent,
+                routing_mode=str(omni["omniroute_routing_mode"]),
+                profile=(env or {}).get("profile", "") if isinstance(env, dict) else "",
+                envelope=env if isinstance(env, dict) else None,
+            )
+    return agent
 
 
 def _init_session(
