@@ -462,11 +462,26 @@ export interface ToolsConfigureResponse {
 
 // ── Model picker ─────────────────────────────────────────────────────
 
+export interface ModelGroupEntry {
+  id: string
+  label: string
+  profile?: string
+  wire_model: string
+}
+
+export interface ModelOptionGroup {
+  id: string
+  label: string
+  routing_mode: 'auto' | 'explicit'
+  entries: ModelGroupEntry[]
+}
+
 export interface ModelOptionProvider {
   auth_type?: string
   authenticated?: boolean
   is_current?: boolean
   key_env?: string
+  model_groups?: ModelOptionGroup[]
   models?: string[]
   name: string
   slug: string
