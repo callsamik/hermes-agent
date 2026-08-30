@@ -138,8 +138,9 @@ def test_picker_provider_rows_filter_omniroute_explicit(monkeypatch):
     assert wire_models == ["anthropic/claude-sonnet-4-20250514"]
 
 
-def test_build_platform_omniroute_picker_entries_v1():
+def test_build_platform_omniroute_picker_entries_all_profiles():
     from hermes_cli.omniroute_picker import (
+        OMNIROUTE_PROFILES,
         build_omniroute_model_groups,
         build_platform_omniroute_picker_entries,
         omniroute_picker_switch_kwargs,
@@ -149,14 +150,16 @@ def test_build_platform_omniroute_picker_entries_v1():
         ["auto/coding", "anthropic/claude-sonnet-4-20250514"]
     )
     entries = build_platform_omniroute_picker_entries(groups)
-    assert len(entries) == 2
-    assert entries[0]["label"] == "Auto (general)"
+    auto_entries = [e for e in entries if (e.get("_picker_group") or {}).get("id") == "auto"]
+    assert len(auto_entries) == len(OMNIROUTE_PROFILES)
+    assert auto_entries[0]["label"] == "Auto · General"
+    assert auto_entries[1]["label"] == "Auto · Coding"
     switch_kw = omniroute_picker_switch_kwargs(
-        entries[0]["_picker_group"], entries[0]
+        auto_entries[1]["_picker_group"], auto_entries[1]
     )
     assert switch_kw == {
         "raw_input": "auto",
         "omniroute_routing_mode": "auto",
-        "omniroute_profile": "general",
+        "omniroute_profile": "coding",
     }
-    assert entries[1]["wire_model"] == "anthropic/claude-sonnet-4-20250514"
+    assert entries[-1]["wire_model"] == "anthropic/claude-sonnet-4-20250514"

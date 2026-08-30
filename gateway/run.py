@@ -5803,6 +5803,13 @@ class TurnRunner:
                     self._runner._enforce_agent_cache_cap()
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, _sig)
 
+        # OmniRoute Auto/Explicit picker state lives on the session override.
+        # /model switch_model applies it in-place, then evicts the cache — so
+        # the next turn's fresh agent must re-apply envelope / explicit mode
+        # or every pick collapses to bare auto+general (and explicit catalog
+        # IDs get coerced back to auto).
+        self._runner._apply_omniroute_from_session_override(ctx.session_key, agent)
+
         # Per-message state — callbacks and reasoning config change every
         # turn and must not be baked into the cached agent constructor.
         # Gate on needs_progress_queue (tool_progress OR thinking_progress)
@@ -26518,6 +26525,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "provider": persisted.get("provider"),
             "base_url": persisted.get("base_url"),
         }
+        # OmniRoute Auto/Explicit state — stripped by older sanitize; when
+        # present it must round-trip or every profile pick collapses to
+        # bare auto/general after restart / agent eviction.
+        mode = str(persisted.get("omniroute_routing_mode") or "").strip().lower()
+        if mode in ("auto", "explicit"):
+            override["omniroute_routing_mode"] = mode
+            if mode == "auto":
+                env = persisted.get("omniroute_envelope")
+                if isinstance(env, dict) and env.get("profile"):
+                    override["omniroute_envelope"] = {
+                        "profile": str(env.get("profile"))
+                    }
         provider = persisted.get("provider")
         if provider:
             # Re-resolve credentials for the persisted provider. On failure
@@ -26539,8 +26558,55 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
         self._session_state(session_key).conversation.model_override = override
         logger.info(
-            "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
-            session_key, override.get("model"), provider or "",
+            "Rehydrated persisted /model override for session=%s: model=%s provider=%s"
+            " routing_mode=%s",
+            session_key,
+            override.get("model"),
+            provider or "",
+            override.get("omniroute_routing_mode") or "",
+        )
+
+    def _apply_omniroute_from_session_override(self, session_key: str, agent) -> None:
+        """Apply OmniRoute routing_mode + envelope from the session /model override.
+
+        Mirrors the TUI ``_make_agent`` path. Without this, Telegram/gateway
+        rebuilds after picker eviction lose profile/explicit mode.
+        """
+        if agent is None or not session_key:
+            return
+        _st = self._peek_session_state(session_key)
+        override = _st.conversation.model_override if _st else None
+        if not isinstance(override, dict):
+            return
+        provider = str(
+            override.get("provider") or getattr(agent, "provider", "") or ""
+        ).strip().lower()
+        if provider != "omniroute":
+            return
+        try:
+            from agent.chat_completion_helpers import (
+                apply_omniroute_runtime,
+                omniroute_override_from_source,
+            )
+        except Exception:
+            logger.debug("omniroute helpers unavailable", exc_info=True)
+            return
+
+        omni = omniroute_override_from_source(override)
+        mode = str(omni.get("omniroute_routing_mode") or "").strip().lower()
+        if not mode:
+            # Legacy overrides (pre-picker persist): infer from wire model.
+            mid = str(override.get("model") or getattr(agent, "model", "") or "").strip()
+            if mid and mid.lower() != "auto" and not mid.lower().startswith("auto/"):
+                mode = "explicit"
+            else:
+                mode = "auto"
+        env = omni.get("omniroute_envelope") if mode == "auto" else None
+        apply_omniroute_runtime(
+            agent,
+            routing_mode=mode,
+            profile=(env or {}).get("profile", "") if isinstance(env, dict) else "",
+            envelope=env if isinstance(env, dict) else None,
         )
 
     def _apply_session_model_override(

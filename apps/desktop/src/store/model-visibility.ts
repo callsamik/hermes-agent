@@ -30,6 +30,10 @@ export const isProviderSentinel = (key: string): boolean => key.endsWith('::')
 export interface ModelFamily {
   fastId: string | null
   id: string
+  /** Optional display label (OmniRoute Auto · Coding, etc.). */
+  label?: string
+  omnirouteRoutingMode?: 'auto' | 'explicit'
+  omnirouteProfile?: string
 }
 
 /** Collapse a provider's model list so a base model and its `…-fast` variant

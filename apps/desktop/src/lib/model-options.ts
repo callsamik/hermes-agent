@@ -1,4 +1,5 @@
 import { getGlobalModelOptions, type HermesGateway, type ModelOptionsResponse } from '@/hermes'
+import { providerModelCount, providerUsesModelGroups } from '@/lib/omnirouteModelPicker'
 import type { ModelOptionProvider } from '@/types/hermes'
 
 /**
@@ -21,6 +22,18 @@ export function manualPickRemoved(
 
   if (!row) {
     return false
+  }
+
+  if (providerUsesModelGroups(row)) {
+    const wireIds = new Set(
+      (row.model_groups ?? []).flatMap(g => g.entries.map(e => e.wire_model))
+    )
+
+    if (wireIds.size === 0) {
+      return false
+    }
+
+    return !wireIds.has(model)
   }
 
   const models = row.models ?? []
@@ -51,7 +64,7 @@ export function modelOptionsQueryKey(profile: null | string | undefined, session
 }
 
 function hasSelectableModels(options: ModelOptionsResponse | null | undefined): boolean {
-  return options?.providers?.some(provider => (provider.models?.length ?? 0) > 0) ?? false
+  return options?.providers?.some(provider => providerModelCount(provider) > 0) ?? false
 }
 
 export async function requestModelOptions({

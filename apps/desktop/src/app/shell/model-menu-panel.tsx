@@ -33,6 +33,10 @@ export interface ModelSelection {
   /** Runtime id of the surface that opened the menu. When set, the switch
    *  targets that session (a tile) instead of the primary `$activeSessionId`. */
   sessionId?: null | string
+  /** OmniRoute Auto/Explicit picker — forwarded into `config.set` as
+   *  `--profile` / `--routing-mode` so the backend applies the envelope. */
+  omnirouteRoutingMode?: 'auto' | 'explicit'
+  omnirouteProfile?: string
 }
 
 interface ModelMenuPanelProps {
@@ -194,7 +198,14 @@ export function ModelMenuPanel({ gateway, onSelectModel, profile = 'default', re
     // scopes the switch to that session; with none it's UI state shipped on the
     // next session.create. Always stamp sessionId from this surface so a tile
     // switch never hits the primary (busy) session by accident.
-    select: (model, provider) => onSelectModel({ model, provider, sessionId: activeSessionId || null }),
+    select: (model, provider, extras) =>
+      onSelectModel({
+        model,
+        provider,
+        sessionId: activeSessionId || null,
+        omnirouteRoutingMode: extras?.omnirouteRoutingMode,
+        omnirouteProfile: extras?.omnirouteProfile
+      }),
 
     setOptions: (patch, row) => {
       // Editing always records the model's global preset (keyed by

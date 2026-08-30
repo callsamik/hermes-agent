@@ -2141,8 +2141,30 @@ def switch_model(
                     if new_model in _declared_model_ids(entry_models):
                         override = True
                         break
+        # OmniRoute workload policy uses wire model ``auto`` with profile envelope;
+        # bare ``auto`` is intentionally absent from /v1/models (only auto/* combos).
+        omniroute_auto_override = False
+        if not override and target_provider == "omniroute":
+            mode = (omniroute_routing_mode or "").strip().lower()
+            wire = (new_model or "").strip().lower()
+            if mode == "auto" or wire == "auto":
+                override = True
+                omniroute_auto_override = True
         if override:
-            validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
+            if omniroute_auto_override:
+                validation = {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            else:
+                validation = {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": False,
+                    "message": validation.get("message", ""),
+                }
         else:
             msg = validation.get("message", "Invalid model")
             return ModelSwitchResult(

@@ -381,9 +381,25 @@ export interface ModelPricing {
   was_output?: string
 }
 
+export interface ModelGroupEntry {
+  id: string
+  label: string
+  profile?: string
+  wire_model: string
+}
+
+export interface ModelOptionGroup {
+  id: string
+  label: string
+  routing_mode: 'auto' | 'explicit'
+  entries: ModelGroupEntry[]
+}
+
 export interface ModelOptionProvider {
   is_current?: boolean
   models?: string[]
+  /** OmniRoute (and future grouped providers): Auto profiles + explicit Models. */
+  model_groups?: ModelOptionGroup[]
   name: string
   slug: string
   total_models?: number

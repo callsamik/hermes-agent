@@ -133,3 +133,121 @@ def test_sanitize_model_override():
         "provider": "openai",
         "base_url": "https://api.openai.example/v1",
     }
+
+
+def test_sanitize_keeps_omniroute_auto_profile():
+    cleaned = sanitize_model_override(
+        {
+            "model": "auto",
+            "provider": "omniroute",
+            "base_url": "http://127.0.0.1:20128/v1",
+            "api_key": "secret",
+            "omniroute_routing_mode": "auto",
+            "omniroute_envelope": {"profile": "coding", "constraints": {"x": 1}},
+        }
+    )
+    assert cleaned == {
+        "model": "auto",
+        "provider": "omniroute",
+        "base_url": "http://127.0.0.1:20128/v1",
+        "omniroute_routing_mode": "auto",
+        "omniroute_envelope": {"profile": "coding"},
+    }
+
+
+def test_sanitize_keeps_omniroute_explicit_mode():
+    cleaned = sanitize_model_override(
+        {
+            "model": "gemini/gemini-2.5-flash-lite",
+            "provider": "omniroute",
+            "omniroute_routing_mode": "explicit",
+            "omniroute_envelope": {"profile": "coding"},
+        }
+    )
+    assert cleaned["omniroute_routing_mode"] == "explicit"
+    assert "omniroute_envelope" not in cleaned
+
+
+def test_omniroute_override_persists_and_rehydrates(store_factory):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    session_key = entry.session_key
+    store.set_model_override(
+        session_key,
+        {
+            "model": "auto",
+            "provider": "omniroute",
+            "base_url": "http://127.0.0.1:20128/v1",
+            "api_key": "sk-secret",
+            "omniroute_routing_mode": "auto",
+            "omniroute_envelope": {"profile": "cheap"},
+        },
+    )
+    store2 = store_factory()
+    persisted = store2.get_model_override(session_key)
+    assert persisted["omniroute_routing_mode"] == "auto"
+    assert persisted["omniroute_envelope"] == {"profile": "cheap"}
+    assert "api_key" not in persisted
+
+    runner = _make_runner(store_factory())
+    with patch(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        return_value={
+            "api_key": "sk-fresh",
+            "api_mode": "chat_completions",
+            "base_url": "http://127.0.0.1:20128/v1",
+            "provider": "omniroute",
+        },
+    ):
+        runner._rehydrate_session_model_override(session_key)
+    override = runner._session_model_overrides[session_key]
+    assert override["omniroute_routing_mode"] == "auto"
+    assert override["omniroute_envelope"] == {"profile": "cheap"}
+
+
+def test_apply_omniroute_from_session_override_sets_envelope():
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner._session_model_overrides = {
+        "s1": {
+            "model": "auto",
+            "provider": "omniroute",
+            "omniroute_routing_mode": "auto",
+            "omniroute_envelope": {"profile": "coding"},
+        }
+    }
+
+    class _Agent:
+        provider = "omniroute"
+        model = "auto"
+        omniroute_routing_mode = ""
+        omniroute_envelope = None
+
+    agent = _Agent()
+    runner._apply_omniroute_from_session_override("s1", agent)
+    assert agent.omniroute_routing_mode == "auto"
+    assert agent.omniroute_envelope == {"profile": "coding"}
+
+
+def test_apply_omniroute_infers_explicit_from_model_id():
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner._session_model_overrides = {
+        "s1": {
+            "model": "gemini/gemini-2.5-flash-lite",
+            "provider": "omniroute",
+        }
+    }
+
+    class _Agent:
+        provider = "omniroute"
+        model = "gemini/gemini-2.5-flash-lite"
+        omniroute_routing_mode = ""
+        omniroute_envelope = {"profile": "stale"}
+
+    agent = _Agent()
+    runner._apply_omniroute_from_session_override("s1", agent)
+    assert agent.omniroute_routing_mode == "explicit"
+    assert agent.omniroute_envelope is None

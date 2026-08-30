@@ -720,10 +720,15 @@ class ChatCompletionsTransport(ProviderTransport):
         provider_profile is passed. Every quirk comes from the profile object.
         """
         from providers.base import OMIT_TEMPERATURE
+        import inspect
 
-        model = profile.coerce_model_id(
-            model, routing_mode=params.get("omniroute_routing_mode") or "auto"
-        )
+        _coerce = profile.coerce_model_id
+        _coerce_kwargs: dict[str, str] = {}
+        if "routing_mode" in inspect.signature(_coerce).parameters:
+            _coerce_kwargs["routing_mode"] = (
+                params.get("omniroute_routing_mode") or "auto"
+            )
+        model = _coerce(model, **_coerce_kwargs)
 
         # Message preprocessing
         sanitized = profile.prepare_messages(sanitized)

@@ -129,10 +129,10 @@ def resolve_model_picker_entry_by_label(
 def build_platform_omniroute_picker_entries(
     model_groups: list[dict],
 ) -> list[dict]:
-    """v1 Telegram/Discord picker: Auto (general) + filtered explicit models.
+    """Telegram/Discord OmniRoute picker: all Auto profiles + explicit models.
 
-    v1.1: replace the single Auto row with the full eight-profile keyboard
-    from the ``auto`` group's entries.
+    Labels use ``Auto · <Profile>`` so the eight workload profiles are
+    distinguishable on the inline keyboard (was v1: only Auto (general)).
     """
     auto_group: dict = {}
     models_group: dict = {}
@@ -146,25 +146,38 @@ def build_platform_omniroute_picker_entries(
             models_group = group
 
     entries: list[dict] = []
-    general: dict | None = None
+    auto_picker_group = {"routing_mode": "auto", "id": "auto"}
+    seen_profiles: set[str] = set()
     for entry in auto_group.get("entries") or []:
         if not isinstance(entry, dict):
             continue
-        profile = str(entry.get("profile") or entry.get("id") or "")
-        if profile == "general":
-            general = dict(entry)
-            break
-    if general is None:
-        general = {
-            "id": "general",
-            "label": "Auto (general)",
-            "profile": "general",
-            "wire_model": "auto",
-        }
-    general = dict(general)
-    general["label"] = "Auto (general)"
-    general["_picker_group"] = {"routing_mode": "auto", "id": "auto"}
-    entries.append(general)
+        profile = str(entry.get("profile") or entry.get("id") or "").strip()
+        if not profile or profile in seen_profiles:
+            continue
+        seen_profiles.add(profile)
+        row = dict(entry)
+        label = str(entry.get("label") or profile).strip() or profile
+        # Avoid bare "General" colliding with Telegram forum topic naming;
+        # prefix every Auto profile for scanability on the keyboard.
+        if not label.lower().startswith("auto"):
+            label = f"Auto · {label}"
+        row["label"] = label
+        row["profile"] = profile
+        row["wire_model"] = str(entry.get("wire_model") or "auto")
+        row["_picker_group"] = auto_picker_group
+        entries.append(row)
+
+    if not entries:
+        # Inventory missing Auto group — still offer general so /model works.
+        entries.append(
+            {
+                "id": "general",
+                "label": "Auto · General",
+                "profile": "general",
+                "wire_model": "auto",
+                "_picker_group": auto_picker_group,
+            }
+        )
 
     explicit_group = {"routing_mode": "explicit", "id": "models"}
     for entry in models_group.get("entries") or []:

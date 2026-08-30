@@ -2,6 +2,7 @@ import { type QueryClient } from '@tanstack/react-query'
 import { useCallback, useRef } from 'react'
 
 import type { ModelSelection } from '@/app/shell/model-menu-panel'
+import { buildModelConfigSetValue } from '@/lib/omnirouteModelPicker'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isBusySessionModelSwitch } from '@/lib/gateway-rpc'
@@ -238,7 +239,7 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         const result = await requestGateway<{ deferred?: boolean }>('config.set', {
           session_id: liveSessionId,
           key: 'model',
-          value: `${selection.model} --provider ${selection.provider} ${scope}`
+          value: buildModelConfigSetValue(selection, scope)
         })
 
         // A pick made DURING a turn is queued by the gateway and applied at the

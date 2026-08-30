@@ -754,22 +754,45 @@ def build_session_context_prompt(
 # written to sessions.json.  On rehydration after a gateway restart the
 # runner re-resolves credentials via the normal runtime provider resolution.
 PERSISTABLE_MODEL_OVERRIDE_KEYS = ("model", "provider", "base_url")
+# OmniRoute Auto/Explicit picker state — non-secret; must survive restart so
+# profile switches aren't lost when the cached agent is evicted (#model-picker).
+PERSISTABLE_OMNIROUTE_OVERRIDE_KEYS = (
+    "omniroute_routing_mode",
+    "omniroute_envelope",
+)
 
 
-def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Return a copy of *override* containing only persistable, non-secret keys.
 
     Returns ``None`` when the input is empty/not a dict or no persistable
     values remain, so callers can store the result directly on
     ``SessionEntry.model_override``.
+
+    OmniRoute ``omniroute_routing_mode`` / ``omniroute_envelope`` are persisted
+    (profile only in the envelope) so Auto→Coding vs Auto→Cheap and Explicit
+    catalog picks survive gateway restart and agent eviction.
     """
     if not isinstance(override, dict):
         return None
-    cleaned = {
+    cleaned: Dict[str, Any] = {
         k: str(v)
         for k, v in override.items()
         if k in PERSISTABLE_MODEL_OVERRIDE_KEYS and v not in (None, "")
     }
+    mode = str(override.get("omniroute_routing_mode") or "").strip().lower()
+    if mode in ("auto", "explicit"):
+        cleaned["omniroute_routing_mode"] = mode
+        if mode == "auto":
+            env = override.get("omniroute_envelope")
+            if isinstance(env, dict):
+                profile = str(env.get("profile") or "").strip()
+                if profile:
+                    cleaned["omniroute_envelope"] = {"profile": profile}
+            else:
+                profile = str(override.get("omniroute_profile") or "").strip()
+                if profile:
+                    cleaned["omniroute_envelope"] = {"profile": profile}
     return cleaned or None
 
 
@@ -869,7 +892,8 @@ class SessionEntry:
     # re-resolved through the normal runtime provider resolution when the
     # override is rehydrated after a restart and are never written to disk
     # (see sanitize_model_override / SessionStore.set_model_override).
-    model_override: Optional[Dict[str, str]] = None
+    # May include OmniRoute keys (routing_mode + envelope dict).
+    model_override: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -3103,7 +3127,7 @@ class SessionStore:
             entry.model_override = cleaned
             self._save()
 
-    def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
+    def get_model_override(self, session_key: str) -> Optional[Dict[str, Any]]:
         """Return the persisted /model override for *session_key*, if any."""
         with self._lock:
             self._ensure_loaded_locked()
