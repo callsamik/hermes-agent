@@ -28,3 +28,39 @@ def is_omniroute_internal_alias(model_id: str) -> bool:
 
 def filter_explicit_omniroute_models(model_ids: list[str]) -> list[str]:
     return [m for m in model_ids if not is_omniroute_internal_alias(m)]
+
+
+def build_omniroute_model_groups(model_ids: list[str]) -> list[dict[str, object]]:
+    """Structured picker groups for OmniRoute: Auto profiles + explicit models."""
+    auto_entries = [
+        {
+            "id": profile_id,
+            "label": label,
+            "profile": profile_id,
+            "wire_model": "auto",
+        }
+        for profile_id, label in OMNIROUTE_PROFILES
+    ]
+    explicit = filter_explicit_omniroute_models(model_ids)
+    model_entries = [
+        {
+            "id": mid,
+            "label": mid,
+            "wire_model": mid,
+        }
+        for mid in explicit
+    ]
+    return [
+        {
+            "id": "auto",
+            "label": "Auto",
+            "routing_mode": "auto",
+            "entries": auto_entries,
+        },
+        {
+            "id": "models",
+            "label": "Models",
+            "routing_mode": "explicit",
+            "entries": model_entries,
+        },
+    ]

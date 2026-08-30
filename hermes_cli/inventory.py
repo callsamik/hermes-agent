@@ -273,6 +273,7 @@ def build_models_payload(
     if featured:
         _apply_featured(rows)
     _apply_custom_aliases(rows)
+    _apply_omniroute_model_groups(rows)
 
     return {
         "providers": rows,
@@ -586,6 +587,18 @@ def _apply_custom_aliases(rows: list[dict]) -> None:
             )
         except Exception:
             continue
+
+
+def _apply_omniroute_model_groups(rows: list[dict]) -> None:
+    """Replace flat model list with Auto/Models groups for OmniRoute."""
+    from hermes_cli.omniroute_picker import build_omniroute_model_groups
+
+    for row in rows:
+        if str(row.get("slug", "")).lower() != "omniroute":
+            continue
+        raw_models = row.get("models") or []
+        row["model_groups"] = build_omniroute_model_groups(raw_models)
+        row["models"] = []
 
 
 # ─── Internal: row post-processing ──────────────────────────────────────
