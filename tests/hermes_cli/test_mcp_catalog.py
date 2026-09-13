@@ -186,6 +186,31 @@ class TestManifestParsing:
         assert e.auth.env[1].required is False
         assert e.auth.env[1].secret is False
 
+    def test_stdio_git_transport_expands_install_dir_and_keeps_env(self, catalog_dir, tmp_path):
+        """Git-cloned stdio entries substitute ${INSTALL_DIR} and keep
+        non-secret transport.env (volume caps, mode flags) on the subprocess.
+        """
+        body = _basic_manifest(
+            transport={
+                "type": "stdio",
+                "command": "${INSTALL_DIR}/.venv/bin/demo-mcp",
+                "env": {"DEMO_MAX": "80", "DEMO_MODE": "stdio"},
+            },
+            install={
+                "type": "git",
+                "url": "https://example.com/x.git",
+                "ref": "abc1234567890abcdef1234567890abcdef12345",
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import _build_server_config
+
+        install_dir = tmp_path / "mcp-installs" / "demo"
+        cfg = _build_server_config(_entry("demo"), install_dir)
+        assert cfg["command"] == str(install_dir / ".venv" / "bin" / "demo-mcp")
+        assert cfg["env"] == {"DEMO_MAX": "80", "DEMO_MODE": "stdio"}
+        assert "args" not in cfg
+
     def test_http_api_key_builds_bearer_headers_template(self, catalog_dir):
         body = _basic_manifest(
             transport={"type": "http", "url": "https://mcp.example.com/sse"},
@@ -897,3 +922,30 @@ class TestShippedCatalog:
                     )
 
         assert not problems, "unpinned catalog entries:\n" + "\n".join(problems)
+
+    def test_git_stdio_entries_anchor_command_to_install_dir(self, monkeypatch):
+        """Git-cloned stdio servers must launch from the clone, not a
+        floating PATH binary. ${INSTALL_DIR} is the catalog's install-time
+        substitution for that checkout.
+        """
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import _catalog_root, _parse_manifest
+
+        root = _catalog_root()
+        if not root.exists():
+            pytest.skip("optional-mcps/ not present in this checkout")
+
+        problems = []
+        for m in root.glob("*/manifest.yaml"):
+            entry = _parse_manifest(m)
+            if entry.install is None or entry.transport.type != "stdio":
+                continue
+            command = entry.transport.command or ""
+            if "${INSTALL_DIR}" not in command:
+                problems.append(
+                    f"{entry.name}: git stdio command {command!r} is not "
+                    "anchored to ${INSTALL_DIR}"
+                )
+        assert not problems, "unanchored git stdio catalog entries:\n" + "\n".join(
+            problems
+        )

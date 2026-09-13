@@ -1,0 +1,101 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: sonos
+description: Control local Sonos speakers — playback, volume, queues, and groups.
+source: https://github.com/PaulKnauer/sonos-mcp-server
+
+# Community SoniqMCP (Apache-2.0). There is no official Sonos-hosted MCP;
+# this server talks to speakers on the local LAN via SoCo/UPnP. Hermes
+# launches it as a stdio subprocess — no public port is opened.
+transport:
+  type: stdio
+  # For git-installed servers, ${INSTALL_DIR} is substituted at install time
+  # with the path the catalog cloned the repo into. The catalog never
+  # auto-updates: the user re-runs `hermes mcp install sonos` to refresh.
+  command: "${INSTALL_DIR}/.venv/bin/soniq-mcp"
+  env:
+    SONIQ_MCP_TRANSPORT: stdio
+    SONIQ_MCP_EXPOSURE: local
+    SONIQ_MCP_LOG_LEVEL: INFO
+    # Volume safety cap baked into the subprocess so a casual install cannot
+    # blast speakers at 100%. Override in mcp_servers.sonos.env after install.
+    SONIQ_MCP_MAX_VOLUME_PCT: "80"
+
+install:
+  type: git
+  url: https://github.com/PaulKnauer/sonos-mcp-server.git
+  # Pinned per catalog dependency policy: full commit SHA (branches and tags
+  # can be moved; SHAs cannot), and the pinned commit must be at least
+  # 2 weeks old at pin time — same supply-chain rules as pyproject
+  # dependencies. This SHA is "chore: bump version to 0.6.1" (2026-07-12),
+  # which also includes the CVE floor bumps in the parent commits. Bumping
+  # the pin is a PR to this manifest.
+  ref: c2ce5a4d50734ff603a54854d9662ffb21e57816
+  # `uv sync --frozen` is upstream's documented install (`make install`).
+  # Requires uv and Python 3.12+ on PATH. --frozen keeps the lockfile at
+  # this SHA authoritative.
+  bootstrap:
+    - "uv sync --frozen"
+
+# LAN discovery; no Sonos cloud account or API key.
+auth:
+  type: none
+
+# Tool selection at install time:
+# SoniqMCP exposes ~45 tools. Mutating lifecycle / whole-home ones (alarm
+# CRUD, playlist CRUD, clear_queue, party_mode, EQ, input switching) are
+# pruned from the default so a casual install gets playback + volume +
+# favourites. Users see the full list in the install-time checklist.
+tools:
+  default_enabled:
+    - list_rooms
+    - get_system_topology
+    - get_playback_state
+    - get_track_info
+    - play
+    - pause
+    - stop
+    - next_track
+    - previous_track
+    - get_play_mode
+    - get_volume
+    - set_volume
+    - adjust_volume
+    - mute
+    - unmute
+    - get_mute
+    - get_queue
+    - list_favourites
+    - play_favourite
+    - list_playlists
+    - play_playlist
+    - get_group_topology
+    - ping
+    - server_info
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - sonos
+    - soniq
+  hosts:
+    - sonos.com
+
+post_install: |
+  SoniqMCP discovers speakers on the local LAN (SSDP/UPnP). Hermes and the
+  speakers must be on the same network — a remote/cloud backend cannot see
+  a home Sonos system.
+
+  Install requires uv (https://docs.astral.sh/uv/) and Python 3.12+. Volume
+  is capped at 80% by default (SONIQ_MCP_MAX_VOLUME_PCT). To pin a default
+  room, add SONIQ_MCP_DEFAULT_ROOM to mcp_servers.sonos.env.
+
+  Alarm/playlist create-update-delete, party_mode, and EQ tools are off by
+  default. Opt in with:
+    hermes mcp configure sonos
+
+  Start a new Hermes session to load the Sonos tools.
