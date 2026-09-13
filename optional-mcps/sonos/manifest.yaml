@@ -1,0 +1,47 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: sonos
+description: Playback, volume, grouping, and favourites on your Sonos system.
+source: https://support.sonos.com/en-us/article/control-your-sonos-system-with-ai-using-sonos-27mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live 2026-09-13: RFC 9728 protected-resource metadata at
+# /.well-known/oauth-protected-resource -> AS metadata with
+# registration_endpoint; DCR POST client_name "Hermes Agent" returned 201).
+# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
+# exchange, and refresh.
+#
+# Endpoint and auth model: Sonos 27mcp early access
+# (https://tech-blog.sonos.com/posts/sonos-27mcp/).
+transport:
+  type: http
+  url: https://mcp.ws.sonos.com/mcp
+
+auth:
+  type: oauth
+
+# Sonos documents 34 tools that "evolve without notice" for agentic use.
+# Leave default_enabled unset so the install-time probe lists whatever the
+# live server exposes and pre-checks all of it; users prune from there.
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - sonos
+  hosts:
+    - sonos.com
+    - play.sonos.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Sonos (or run `hermes mcp login sonos`). Sign in with your Sonos
+  account, then restart the session so tools load.
+
+  Requires S2 software and a system that already works at
+  play.sonos.com. Early access is US-English.
+
+  Then name a room and a track — for example, play a favourite in
+  Living Room 2.
